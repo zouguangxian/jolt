@@ -49,6 +49,8 @@ inside the cloned repository.
 
 ```cd jolt; rustup show```.
 
+Furthermore, building secp256k1 requires clang.
+
 ## Build
 
 This repository uses workspaces, and each workspace can be built individually, e.g.

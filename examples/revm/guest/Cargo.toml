@@ -1,0 +1,13 @@
+[package]
+name = "revm-guest"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+guest = []
+
+[dependencies]
+jolt = { package = "jolt-sdk", path = "../../../jolt-sdk" }
+revm = { version = "20.0.0", features = ["secp256k1", "serde", "portable"], default-features = false}
+
+
