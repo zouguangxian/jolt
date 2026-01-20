@@ -244,6 +244,142 @@ impl core::fmt::Debug for MemoryLayout {
     }
 }
 
+/// Layout of the Jolt memory-mapped I/O region below `RAM_START_ADDRESS`.
+///
+/// This can be computed solely from I/O sizing parameters, without needing the ELF program size.
+#[derive(Default, Clone, PartialEq, Serialize, Deserialize, CanonicalSerialize, CanonicalDeserialize)]
+pub struct IoLayout {
+    pub max_trusted_advice_size: u64,
+    pub trusted_advice_start: u64,
+    pub trusted_advice_end: u64,
+    pub max_untrusted_advice_size: u64,
+    pub untrusted_advice_start: u64,
+    pub untrusted_advice_end: u64,
+    pub max_input_size: u64,
+    pub max_output_size: u64,
+    pub input_start: u64,
+    pub input_end: u64,
+    pub output_start: u64,
+    pub output_end: u64,
+    pub panic: u64,
+    pub termination: u64,
+    pub io_end: u64,
+}
+
+impl IoLayout {
+    pub fn new(
+        max_input_size: u64,
+        max_output_size: u64,
+        max_trusted_advice_size: u64,
+        max_untrusted_advice_size: u64,
+    ) -> Self {
+        // helper to align ‘val’ *up* to a multiple of ‘align’, panicking on overflow
+        #[inline]
+        fn align_up(val: u64, align: u64) -> u64 {
+            if align == 0 {
+                val
+            } else {
+                match val % align {
+                    0 => val,
+                    rem => val.checked_add(align - rem).expect("alignment overflow"),
+                }
+            }
+        }
+
+        let max_trusted_advice_size = align_up(max_trusted_advice_size, 8);
+        let max_untrusted_advice_size = align_up(max_untrusted_advice_size, 8);
+        let max_input_size = align_up(max_input_size, 8);
+        let max_output_size = align_up(max_output_size, 8);
+
+        // Critical for ValEvaluation and ValFinal sumchecks in RAM
+        assert!(
+            max_trusted_advice_size.is_power_of_two() || max_trusted_advice_size == 0,
+            "Trusted advice size must be a power of two (got {max_trusted_advice_size})",
+        );
+        assert!(
+            max_untrusted_advice_size.is_power_of_two() || max_untrusted_advice_size == 0,
+            "Untrusted advice size must be a power of two (got {max_untrusted_advice_size})",
+        );
+
+        // Adds 16 to account for panic bit and termination bit (8 bytes each).
+        let io_region_bytes = max_input_size
+            .checked_add(max_trusted_advice_size)
+            .and_then(|s| s.checked_add(max_untrusted_advice_size))
+            .and_then(|s| s.checked_add(max_output_size))
+            .and_then(|s| s.checked_add(16))
+            .expect("I/O region size overflow");
+
+        // Pad to next power-of-two words so witness index mapping is aligned.
+        let io_region_words = (io_region_bytes / 8).next_power_of_two();
+        let io_bytes = io_region_words
+            .checked_mul(8)
+            .expect("I/O region byte count overflow");
+
+        // Place the larger or equal-sized advice region first in memory (lower address).
+        let (
+            trusted_advice_start,
+            trusted_advice_end,
+            untrusted_advice_start,
+            untrusted_advice_end,
+        ) = if max_trusted_advice_size >= max_untrusted_advice_size {
+            let trusted_start = RAM_START_ADDRESS
+                .checked_sub(io_bytes)
+                .expect("I/O region exceeds RAM_START_ADDRESS");
+            let trusted_end = trusted_start
+                .checked_add(max_trusted_advice_size)
+                .expect("trusted_advice_end overflow");
+            let untrusted_start = trusted_end;
+            let untrusted_end = untrusted_start
+                .checked_add(max_untrusted_advice_size)
+                .expect("untrusted_advice_end overflow");
+            (trusted_start, trusted_end, untrusted_start, untrusted_end)
+        } else {
+            let untrusted_start = RAM_START_ADDRESS
+                .checked_sub(io_bytes)
+                .expect("I/O region exceeds RAM_START_ADDRESS");
+            let untrusted_end = untrusted_start
+                .checked_add(max_untrusted_advice_size)
+                .expect("untrusted_advice_end overflow");
+            let trusted_start = untrusted_end;
+            let trusted_end = trusted_start
+                .checked_add(max_trusted_advice_size)
+                .expect("trusted_advice_end overflow");
+            (trusted_start, trusted_end, untrusted_start, untrusted_end)
+        };
+
+        let input_start = core::cmp::max(untrusted_advice_end, trusted_advice_end);
+        let input_end = input_start
+            .checked_add(max_input_size)
+            .expect("input_end overflow");
+        let output_start = input_end;
+        let output_end = output_start
+            .checked_add(max_output_size)
+            .expect("output_end overflow");
+
+        let panic = output_end;
+        let termination = panic.checked_add(8).expect("termination overflow");
+        let io_end = termination.checked_add(8).expect("io_end overflow");
+
+        Self {
+            max_trusted_advice_size,
+            trusted_advice_start,
+            trusted_advice_end,
+            max_untrusted_advice_size,
+            untrusted_advice_start,
+            untrusted_advice_end,
+            max_input_size,
+            max_output_size,
+            input_start,
+            input_end,
+            output_start,
+            output_end,
+            panic,
+            termination,
+            io_end,
+        }
+    }
+}
+
 impl MemoryLayout {
     pub fn new(config: &MemoryConfig) -> Self {
         assert!(

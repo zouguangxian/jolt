@@ -15,6 +15,33 @@ repository = "https://github.com/a16z/jolt"
 edition = "2021"
 
 [features]
+# Jolt guest features (aligned with spike-platform)
+guest-std = [
+    "arch-riscv",
+    "os-linux",
+    "runtime-musl",
+    "vfs-device-console",
+    "memory",
+    "thread",
+    "random",
+    "postcard/use-std",
+    "jolt-platform/std",
+    "jolt-sdk-macros/guest-std",
+    "serde/std",
+    "dep:linked_list_allocator",
+]
+
+debug = ["zeroos/debug"]
+bounds-checks = ["zeroos/bounds-checks"]
+arch-riscv = ["zeroos/arch-riscv"]
+os-linux = ["zeroos/os-linux"]
+runtime-musl = ["zeroos/runtime-musl", "dep:zeroos-runtime-musl"]
+backtrace = ["runtime-musl", "zeroos/backtrace"]
+memory = ["zeroos/alloc-linked-list"]
+vfs = ["zeroos/vfs"]
+vfs-device-console = ["vfs", "zeroos/vfs-device-console"]
+thread = ["zeroos/scheduler-cooperative"]
+random = ["zeroos/rng-lcg"]
 default = ["jolt-platform/random"]
 host = [
     "jolt-core/default",
@@ -26,15 +53,7 @@ host = [
     "postcard/use-std",
     "serde/std",
 ]
-guest-std = [
-    "postcard/use-std",
-    "jolt-platform/std",
-    "jolt-sdk-macros/guest-std",
-    "serde/std",
-    "zeroos-jolt-platform/os-linux",
-    "dep:zeroos-runtime-musl",
-    "dep:linked_list_allocator",
-]
+
 guest-verifier = [
     "guest-std",
     "dep:tracer",
@@ -43,10 +62,10 @@ guest-verifier = [
     "jolt-core/minimal",
 ]
 malloc-shim = ["jolt-platform/malloc-shim"]
-
 [dependencies]
 # Jolt's jolt-platform for host/prover functionality
 jolt-platform.workspace = true
+cfg-if = "1.0"
 postcard.workspace = true
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 ark-ec = { workspace = true, default-features = false, optional = true }
@@ -61,9 +80,17 @@ rand = { workspace = true, optional = true }
 
 # Guest boot code dependencies (from ZeroOS) - RISC-V target only
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+zeroos = { workspace = true }
+zeroos-arch-riscv = { workspace = true }
+
+
+
+
+
+
 # ZeroOS jolt-platform: provides __platform_bootstrap, syscall routing, VFS, etc.
 # Features are controlled by jolt-sdk features (guest-std enables os-linux, default enables memory)
-zeroos-jolt-platform = { package = "jolt-platform", path = "../../ZeroOS/platforms/jolt-platform", default-features = false, features = ["memory"] }
+zeroos-foundation = { workspace = true }
 zeroos-runtime-musl = { path = "../../ZeroOS/crates/zeroos-runtime-musl", optional = true }
 linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin_nightly"], optional = true }
 

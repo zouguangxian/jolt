@@ -2,21 +2,24 @@ use crate::field::JoltField;
 use crate::guest;
 use crate::host::analyze::ProgramSummary;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::host::toolchain::{install_no_std_toolchain, install_toolchain};
-use crate::host::TOOLCHAIN_VERSION;
-use crate::host::{Program, DEFAULT_TARGET_DIR, LINKER_SCRIPT_TEMPLATE};
+
+
+use crate::host::{Program, DEFAULT_TARGET_DIR, };
 use common::constants::{
     DEFAULT_MAX_INPUT_SIZE, DEFAULT_MAX_OUTPUT_SIZE, DEFAULT_MAX_TRUSTED_ADVICE_SIZE,
-    DEFAULT_MAX_UNTRUSTED_ADVICE_SIZE, DEFAULT_MEMORY_SIZE, DEFAULT_STACK_SIZE, RAM_START_ADDRESS,
-    STACK_CANARY_SIZE,
+    DEFAULT_MAX_UNTRUSTED_ADVICE_SIZE, DEFAULT_MEMORY_SIZE, DEFAULT_STACK_SIZE, DEFAULT_HEAP_SIZE,
+    JOLT_ABI_VERSION,
+    RAM_START_ADDRESS,
+    
 };
 use common::jolt_device::{JoltDevice, MemoryConfig};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
-use std::str::FromStr;
-use std::{fs, io};
+use object::{Object, ObjectSymbol};
+
+use std::io;
 use tracer::emulator::memory::Memory;
 use tracer::instruction::{Cycle, Instruction};
 use tracer::LazyTraceIterator;
@@ -29,6 +32,7 @@ impl Program {
             func: None,
             memory_size: DEFAULT_MEMORY_SIZE,
             stack_size: DEFAULT_STACK_SIZE,
+            heap_size: DEFAULT_HEAP_SIZE,
             max_input_size: DEFAULT_MAX_INPUT_SIZE,
             max_untrusted_advice_size: DEFAULT_MAX_UNTRUSTED_ADVICE_SIZE,
             max_trusted_advice_size: DEFAULT_MAX_TRUSTED_ADVICE_SIZE,
@@ -63,6 +67,10 @@ impl Program {
         self.stack_size = len;
     }
 
+    pub fn set_heap_size(&mut self, len: u64) {
+        self.heap_size = len;
+    }
+
     pub fn set_max_input_size(&mut self, size: u64) {
         self.max_input_size = size;
     }
@@ -79,11 +87,109 @@ impl Program {
         self.max_output_size = size;
     }
 
+    /// Build a `MemoryConfig` using the sizes currently stored on this `Program`.
+    ///
+    /// After `Program::build*`, these sizes are expected to have been updated from ELF symbols
+    /// (e.g., `__jolt_max_*`, `__heap_*`, `__stack_*`), making the ELF the source of truth.
+    pub fn discovered_memory_config(&self, program_size: u64) -> MemoryConfig {
+        MemoryConfig {
+            memory_size: self.memory_size,
+            stack_size: self.stack_size,
+            max_input_size: self.max_input_size,
+            max_untrusted_advice_size: self.max_untrusted_advice_size,
+            max_trusted_advice_size: self.max_trusted_advice_size,
+            max_output_size: self.max_output_size,
+            program_size: Some(program_size),
+        }
+    }
+
     pub fn build(&mut self, target_dir: &str) {
         self.build_with_channel(target_dir, "stable");
     }
 
     #[tracing::instrument(skip_all, name = "Program::build")]
+    
+    fn discover_memory_sizes(&mut self, elf_contents: &[u8]) {
+        if let Ok(elf) = object::File::parse(elf_contents) {
+            let mut heap_start = None;
+            let mut heap_end = None;
+            let mut stack_top = None;
+            let mut stack_bottom = None;
+            let mut max_input = None;
+            let mut max_output = None;
+            let mut max_trusted = None;
+            let mut max_untrusted = None;
+            let mut abi_version = None;
+
+            for symbol in elf.symbols() {
+                if let Ok(name) = symbol.name() {
+                    match name {
+                        "__heap_start" => heap_start = Some(symbol.address()),
+                        "__heap_end" => heap_end = Some(symbol.address()),
+                        "__stack_top" => stack_top = Some(symbol.address()),
+                        "__stack_bottom" => stack_bottom = Some(symbol.address()),
+                        "__jolt_max_input_size" => max_input = Some(symbol.address()),
+                        "__jolt_max_output_size" => max_output = Some(symbol.address()),
+                        "__jolt_max_trusted_advice_size" => max_trusted = Some(symbol.address()),
+                        "__jolt_max_untrusted_advice_size" => max_untrusted = Some(symbol.address()),
+                        "__jolt_abi_version" => abi_version = Some(symbol.address()),
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some(v) = abi_version {
+                if v != 0 && v != JOLT_ABI_VERSION {
+                    panic!(
+                        "Unsupported Jolt guest ABI version: ELF has {}, host supports {}",
+                        v, JOLT_ABI_VERSION
+                    );
+                }
+            }
+
+            if let (Some(start), Some(end)) = (heap_start, heap_end) {
+                let size = end.saturating_sub(start);
+                info!("Discovered heap size from ELF: {} bytes", size);
+                self.heap_size = size;
+            }
+
+            if let (Some(bottom), Some(top)) = (stack_bottom, stack_top) {
+                let size = top.saturating_sub(bottom);
+                info!("Discovered stack size from ELF: {} bytes", size);
+                self.stack_size = size;
+            }
+
+            if let Some(size) = max_input {
+                if size != 0 {
+                    info!("Discovered max input size from ELF: {} bytes", size);
+                    self.max_input_size = size;
+                }
+            }
+            if let Some(size) = max_output {
+                if size != 0 {
+                    info!("Discovered max output size from ELF: {} bytes", size);
+                    self.max_output_size = size;
+                }
+            }
+            if let Some(size) = max_trusted {
+                if size != 0 {
+                    info!("Discovered max trusted advice size from ELF: {} bytes", size);
+                    self.max_trusted_advice_size = size;
+                }
+            }
+            if let Some(size) = max_untrusted {
+                if size != 0 {
+                    info!("Discovered max untrusted advice size from ELF: {} bytes", size);
+                    self.max_untrusted_advice_size = size;
+                }
+            }
+            
+            // Re-calculate memory_size if needed, or just let MemoryLayout do it.
+            // In Jolt, memory_size usually refers to the heap size.
+            self.memory_size = self.heap_size;
+        }
+    }
+
     pub fn build_with_channel(&mut self, target_dir: &str, _channel: &str) {
         if self.elf.is_none() {
             // Use cargo-jolt to build the guest program
@@ -103,8 +209,14 @@ impl Program {
 
             // Add --std flag if std mode is enabled
             if self.std {
-                args.push("--std".to_string());
+                args.push("--mode".to_string());
+                args.push("std".to_string());
             }
+
+            // Do NOT pass memory sizing flags here.
+            // `cargo-jolt` owns the linker template, and sizing should come from the guest
+            // crate's `[package.metadata.jolt]` (or explicit `cargo jolt build` CLI overrides).
+
 
             // Create per-guest target directory (isolates builds)
             let guest_target_dir = format!(
@@ -167,6 +279,9 @@ impl Program {
 
             // Store the main ELF path
             self.elf = Some(elf_path.clone());
+            if let Some(contents) = self.get_elf_contents() {
+                self.discover_memory_sizes(&contents);
+            }
 
             info!("Built guest binary with cargo-jolt: {}", elf_path.display());
         }
@@ -288,14 +403,9 @@ impl Program {
     // save_linker and linker_path are no longer needed when using cargo-jolt
     // cargo-jolt handles linker script generation
     // Keeping these methods for backward compatibility but they're unused
-    fn save_linker(&self) {
-        // No-op: cargo-jolt handles linker scripts
-    }
 
-    fn linker_path(&self) -> String {
-        // No-op: cargo-jolt handles linker scripts
-        String::new()
-    }
+
+
 }
 
 fn compose_command_line(program: &str, envs: &[(&str, String)], args: &[&str]) -> String {

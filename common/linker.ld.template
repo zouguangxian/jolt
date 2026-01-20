@@ -1,0 +1,134 @@
+OUTPUT_ARCH(riscv)
+ENTRY(_start)
+
+MEMORY
+{
+    RAM (rwx) : ORIGIN = {{ MEMORY_ORIGIN }}, LENGTH = {{ MEMORY_SIZE }}
+}
+
+/* Reserve heap and stack sizes */
+__heap_size = {{ HEAP_SIZE }};
+__stack_size = {{ STACK_SIZE }};
+
+/* Jolt I/O sizing symbols */
+PROVIDE(__jolt_max_input_size = {{ JOLT_MAX_INPUT_SIZE }});
+PROVIDE(__jolt_max_output_size = {{ JOLT_MAX_OUTPUT_SIZE }});
+PROVIDE(__jolt_max_trusted_advice_size = {{ JOLT_MAX_TRUSTED_ADVICE_SIZE }});
+PROVIDE(__jolt_max_untrusted_advice_size = {{ JOLT_MAX_UNTRUSTED_ADVICE_SIZE }});
+
+/* Jolt guest ABI versioning (scalar symbol; host can reject incompatible ELFs). */
+PROVIDE(__jolt_abi_version = {{ JOLT_ABI_VERSION }});
+
+PHDRS
+{
+    text PT_LOAD FLAGS(5);        /* R-X */
+    rodata PT_LOAD FLAGS(4);      /* R-- */
+    data PT_LOAD FLAGS(6);        /* RW- (TLS sections will be in this LOAD) */
+    tls PT_TLS;                   /* TLS metadata (references sections in data LOAD) */
+}
+
+SECTIONS
+{
+    . = {{ MEMORY_ORIGIN }};
+    PROVIDE_HIDDEN(__ehdr_start = .);
+
+    .text : {
+        *(.text.boot)
+        *(.text .text.*)
+        . = ALIGN(4);
+    } > RAM : text
+
+    .rodata : {
+        *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
+        . = ALIGN(8);
+    } > RAM : rodata
+
+    {% if backtrace %}
+    .eh_frame_hdr : ALIGN(4) {
+        PROVIDE_HIDDEN(__eh_frame_hdr_start = .);
+        KEEP(*(.eh_frame_hdr))
+        PROVIDE_HIDDEN(__eh_frame_hdr_end = .);
+        . = ALIGN(8);
+    } > RAM : rodata
+
+    .eh_frame : ALIGN(8) {
+        PROVIDE_HIDDEN(__eh_frame_start = .);
+        KEEP(*(.eh_frame))
+        KEEP(*(.eh_frame.*))
+        /* GCC/libgcc expects .eh_frame to be terminated by a 0-length entry. */
+        LONG(0)
+        PROVIDE_HIDDEN(__eh_frame_end = .);
+        . = ALIGN(8);
+    } > RAM : rodata
+    {% endif %}
+
+    /* Constructor/destructor arrays (used by musl's __libc_start_init) */
+    .init_array : {
+        PROVIDE_HIDDEN(__init_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
+        KEEP(*(.init_array))
+        PROVIDE_HIDDEN(__init_array_end = .);
+    } > RAM : data
+
+    .fini_array : {
+        PROVIDE_HIDDEN(__fini_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
+        KEEP(*(.fini_array))
+        PROVIDE_HIDDEN(__fini_array_end = .);
+    } > RAM : data
+
+    /* Start data LOAD segment - TLS sections will be included here */
+    .data : {
+        *(.data .data.*)
+        *(.sdata .sdata.*)
+        . = ALIGN(8);
+    } > RAM : data
+
+    /* TLS sections - assigned to both data LOAD (for loading) and tls (for PT_TLS) */
+    .tdata : ALIGN(16) {
+        PROVIDE_HIDDEN(__tdata_start = .);
+        *(.tdata .tdata.*)
+        /* Force non-empty TLS section with 8-byte dummy data */
+        . = . + 8;
+        PROVIDE_HIDDEN(__tdata_end = .);
+    } > RAM : data : tls
+
+    .tbss : ALIGN(16) {
+        PROVIDE_HIDDEN(__tbss_start = .);
+        *(.tbss .tbss.*)
+        *(.tcommon)
+        /* Force non-empty TLS section with 8-byte dummy space */
+        . = . + 8;
+        PROVIDE_HIDDEN(__tbss_end = .);
+    } > RAM : data : tls
+
+    .bss : {
+        PROVIDE(__bss_start = .);
+        *(.bss .bss.*)
+        *(COMMON)
+        *(.sbss .sbss.*)
+        . = ALIGN(8);
+        PROVIDE(__bss_end = .);
+        /* Note: No HTIF sections for Jolt - uses ECALL-based I/O */
+    } > RAM : data
+
+    /* Heap/stack reservation without file bloat: compute boundaries as linker symbols near
+     * the top of RAM, without emitting heap/stack sections. */
+    PROVIDE(__stack_top = ALIGN((ORIGIN(RAM) + LENGTH(RAM)) - 15, 16));
+    PROVIDE(__stack_bottom = __stack_top - __stack_size);
+
+    /* Align heap end to a page boundary below the stack, leaving a 1-page guard gap. */
+    PROVIDE(__stack_guard_size = 4096);
+    PROVIDE(__heap_end = ALIGN((__stack_bottom - __stack_guard_size) - 4095, 4096));
+    PROVIDE(__heap_start = ALIGN((__heap_end - __heap_size) - 4095, 4096));
+
+    /* Compatibility symbols used by Jolt's bump allocator and some guest boot paths. */
+    PROVIDE(_HEAP_PTR = __heap_start);
+    PROVIDE(_STACK_PTR = __stack_top);
+
+    /* Safety: ensure the reserved regions do not overlap the loaded image. */
+    ASSERT(__heap_start >= __bss_end, "heap overlaps .bss/.data")
+    ASSERT(__heap_end <= __stack_bottom, "heap overlaps stack")
+    ASSERT(__heap_end + __stack_guard_size <= __stack_bottom, "heap/stack guard gap violated")
+}

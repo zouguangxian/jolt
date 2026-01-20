@@ -2,26 +2,18 @@
 
 extern crate jolt_sdk_macros;
 
-// Link ZeroOS jolt-platform for guest builds on RISC-V.
-// This provides __platform_bootstrap and (for guest-std) jolt_syscall.
-// The `extern crate` ensures the linker includes it.
+// Standard ZeroOS architecture and runtimes for guest builds
 #[cfg(all(not(feature = "host"), target_arch = "riscv64"))]
-extern crate zeroos_jolt_platform;
+pub mod platform;
 
 #[cfg(any(feature = "host", feature = "guest-verifier"))]
 pub mod host_utils;
 #[cfg(any(feature = "host", feature = "guest-verifier"))]
 pub use host_utils::*;
 
-// Guest std boot code - provides _start, kernel_main for std-mode guests
-// Only compile this for the RISC-V target (not for host builds)
-#[cfg(all(feature = "guest-std", target_arch = "riscv64"))]
-mod guest_std_boot;
 
-// Guest no-std boot code - provides _start, boot_main for no-std guests
-// This initializes ZeroOS heap and provides clean exit via infinite loop
-#[cfg(all(not(feature = "guest-std"), not(feature = "host"), target_arch = "riscv64"))]
-mod guest_no_std_boot;
+
+
 
 pub use jolt_platform::*;
 pub use jolt_sdk_macros::provable;
@@ -89,3 +81,26 @@ impl<T> core::ops::Deref for UntrustedAdvice<T> {
 #[no_mangle]
 #[cfg(feature = "host")]
 pub static mut _HEAP_PTR: u8 = 0;
+
+
+// Re-export common types for the provable macro
+#[cfg(feature = "host")]
+pub use common::jolt_device::{JoltDevice, MemoryConfig, MemoryLayout};
+
+#[cfg(feature = "host")]
+pub use jolt_core::{
+    field::JoltField,
+    host::analyze,
+    zkvm::JoltProverPreprocessing,
+    zkvm::JoltVerifierPreprocessing,
+    zkvm::JoltRV64IMAC,
+    zkvm::RV64IMACJoltProof,
+    zkvm::Jolt,
+};
+#[cfg(feature = "host")]
+pub type F = jolt_core::ark_bn254::Fr;
+#[cfg(feature = "host")]
+pub type PCS = jolt_core::poly::commitment::dory::DoryCommitmentScheme;
+
+// Note: `jolt_print!` / `jolt_println!` are `#[macro_export]` macros defined in
+// `platform/ecall.rs`, so they are exported at the crate root automatically.

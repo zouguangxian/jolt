@@ -1,0 +1,16 @@
+[package]
+name = "cargo-jolt"
+version = "0.1.0"
+edition = "2021"
+description = "Build tool for Jolt zkVM - independent of jolt-platform"
+
+[dependencies]
+toml = "0.8"
+clap = { workspace = true, features = ["derive", "env"] }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+build = { path = "../../../ZeroOS/crates/zeroos-build", package = "zeroos-build" }
+parse-size = "1.0"

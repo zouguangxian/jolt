@@ -25,15 +25,11 @@ struct FunctionAttributes {
     pub attributes: Attributes,
 }
 
-fn preprocess_and_save(func_name: &str, attributes: &Attributes, is_std: bool) -> Result<()> {
+fn preprocess_and_save(func_name: &str, _attributes: &Attributes, is_std: bool) -> Result<()> {
     let mut program = Program::new("guest");
 
     program.set_func(func_name);
     program.set_std(is_std);
-    program.set_memory_size(attributes.memory_size);
-    program.set_stack_size(attributes.stack_size);
-    program.set_max_input_size(attributes.max_input_size);
-    program.set_max_output_size(attributes.max_output_size);
 
     let (bytecode, memory_init, _) = program.decode();
     let decoded_data = DecodedData {

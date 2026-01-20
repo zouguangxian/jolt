@@ -2,10 +2,7 @@ extern crate proc_macro;
 
 use core::panic;
 
-use common::{
-    attributes::parse_attributes,
-    jolt_device::{MemoryConfig, MemoryLayout},
-};
+use common::attributes::{parse_attributes, Attributes};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -18,9 +15,11 @@ static WASM_IMPORTS_INIT: Once = Once::new();
 pub fn provable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = parse_macro_input!(attr as AttributeArgs);
     let func = parse_macro_input!(item as ItemFn);
-    let mut builder = MacroBuilder::new(attr, func);
+    let attributes: Attributes = parse_attributes(&attr);
+    let mut builder = MacroBuilder::new(attributes, func);
 
     let mut token_stream = builder.build();
+    // ... rest of the function ...
 
     // Add wasm utilities and functions if the function is marked as wasm
     if builder.has_wasm_attr() {
@@ -37,7 +36,7 @@ pub fn provable(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 struct MacroBuilder {
-    attr: AttributeArgs,
+    attributes: Attributes,
     func: ItemFn,
     std: bool,
     pub_func_args: Vec<(Ident, Box<Type>)>,
@@ -46,7 +45,7 @@ struct MacroBuilder {
 }
 
 impl MacroBuilder {
-    fn new(attr: AttributeArgs, func: ItemFn) -> Self {
+    fn new(attributes: Attributes, func: ItemFn) -> Self {
         let (pub_func_args, trusted_func_args, untrusted_func_args) = Self::get_func_args(&func);
         #[cfg(feature = "guest-std")]
         let std = true;
@@ -54,7 +53,7 @@ impl MacroBuilder {
         let std = false;
 
         Self {
-            attr,
+            attributes,
             func,
             std,
             pub_func_args,
@@ -64,7 +63,6 @@ impl MacroBuilder {
     }
 
     fn build(&mut self) -> TokenStream {
-        let memory_config_fn = self.make_memory_config_fn();
         let build_prover_fn = self.make_build_prover_fn();
         let build_verifier_fn = self.make_build_verifier_fn();
         let analyze_fn = self.make_analyze_function();
@@ -76,9 +74,8 @@ impl MacroBuilder {
         let commit_trusted_advice_fn = self.make_commit_trusted_advice_func();
         let prove_fn = self.make_prove_func();
 
-        let attributes = parse_attributes(&self.attr);
         let mut execute_fn = quote! {};
-        if !attributes.guest_only {
+        if !self.attributes.guest_only {
             execute_fn = self.make_execute_function();
         }
 
@@ -93,7 +90,6 @@ impl MacroBuilder {
         };
 
         quote! {
-            #memory_config_fn
             #build_prover_fn
             #build_verifier_fn
             #execute_fn
@@ -108,38 +104,6 @@ impl MacroBuilder {
             #main_fn
         }
         .into()
-    }
-
-    fn make_memory_config_fn(&self) -> TokenStream2 {
-        let fn_name = self.get_func_name();
-        let attributes = parse_attributes(&self.attr);
-        let max_input_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_input_size);
-        let max_output_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_output_size);
-        let max_trusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_trusted_advice_size);
-        let max_untrusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_untrusted_advice_size);
-        let stack_size = proc_macro2::Literal::u64_unsuffixed(attributes.stack_size);
-        let memory_size = proc_macro2::Literal::u64_unsuffixed(attributes.memory_size);
-
-        let memory_config_fn_name = Ident::new(&format!("memory_config_{fn_name}"), fn_name.span());
-        let imports = self.make_imports();
-
-        quote! {
-            #[cfg(all(not(target_arch = "wasm32"), not(feature = "guest")))]
-            pub fn #memory_config_fn_name() -> jolt::MemoryConfig {
-                #imports
-                MemoryConfig {
-                    max_input_size: #max_input_size,
-                    max_output_size: #max_output_size,
-                    max_trusted_advice_size: #max_trusted_advice_size,
-                    max_untrusted_advice_size: #max_untrusted_advice_size,
-                    stack_size: #stack_size,
-                    memory_size: #memory_size,
-                    program_size: None,
-                }
-            }
-        }
     }
 
     fn make_build_prover_fn(&self) -> TokenStream2 {
@@ -292,7 +256,6 @@ impl MacroBuilder {
     }
 
     fn make_analyze_function(&self) -> TokenStream2 {
-        let set_mem_size = self.make_set_linker_parameters();
         let guest_name = self.get_guest_name();
         let imports = self.make_imports();
         let set_std = self.make_set_std();
@@ -326,7 +289,6 @@ impl MacroBuilder {
                 let mut program = Program::new(#guest_name);
                 program.set_func(#fn_name_str);
                 #set_std
-                #set_mem_size
 
                 let mut input_bytes = vec![];
                 #(#set_pub_args;)*
@@ -343,7 +305,6 @@ impl MacroBuilder {
     fn make_trace_to_file_func(&self) -> TokenStream2 {
         let imports = self.make_imports();
         let guest_name = self.get_guest_name();
-        let set_mem_size = self.make_set_linker_parameters();
         let set_std = self.make_set_std();
 
         let fn_name = self.get_func_name();
@@ -375,7 +336,6 @@ impl MacroBuilder {
                 let path = std::path::PathBuf::from(target_dir);
                 program.set_func(#fn_name_str);
                 #set_std
-                #set_mem_size
 
                 let mut input_bytes = vec![];
                 #(#set_pub_args;)*
@@ -390,13 +350,11 @@ impl MacroBuilder {
     }
 
     fn make_compile_func(&self) -> TokenStream2 {
-        let attributes = parse_attributes(&self.attr);
         let imports = self.make_imports();
         let guest_name = self.get_guest_name();
-        let set_mem_size = self.make_set_linker_parameters();
         let set_std = self.make_set_std();
 
-        let channel = if attributes.nightly {
+        let channel = if self.attributes.nightly {
             quote! { "nightly" }
         } else {
             quote! { "stable" }
@@ -412,7 +370,6 @@ impl MacroBuilder {
                 let mut program = Program::new(#guest_name);
                 program.set_func(#fn_name_str);
                 #set_std
-                #set_mem_size
                 program.build_with_channel(target_dir, #channel);
 
                 program
@@ -421,16 +378,7 @@ impl MacroBuilder {
     }
 
     fn make_preprocess_prover_func(&self) -> TokenStream2 {
-        let attributes = parse_attributes(&self.attr);
-        let max_input_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_input_size);
-        let max_output_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_output_size);
-        let max_untrusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_untrusted_advice_size);
-        let max_trusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_trusted_advice_size);
-        let stack_size = proc_macro2::Literal::u64_unsuffixed(attributes.stack_size);
-        let memory_size = proc_macro2::Literal::u64_unsuffixed(attributes.memory_size);
-        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(attributes.max_trace_length);
+        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(self.attributes.max_trace_length);
         let imports = self.make_imports();
 
         let fn_name = self.get_func_name();
@@ -444,15 +392,7 @@ impl MacroBuilder {
                 #imports
 
                 let (bytecode, memory_init, program_size) = program.decode();
-                let memory_config = MemoryConfig {
-                    max_input_size: #max_input_size,
-                    max_output_size: #max_output_size,
-                    max_untrusted_advice_size: #max_untrusted_advice_size,
-                    max_trusted_advice_size: #max_trusted_advice_size,
-                    stack_size: #stack_size,
-                    memory_size: #memory_size,
-                    program_size: Some(program_size),
-                };
+                let memory_config = program.discovered_memory_config(program_size);
                 let memory_layout = MemoryLayout::new(&memory_config);
 
                 // TODO(moodlezoup): Feed in size parameters via macro
@@ -470,16 +410,7 @@ impl MacroBuilder {
     }
 
     fn make_preprocess_verifier_func(&self) -> TokenStream2 {
-        let attributes = parse_attributes(&self.attr);
-        let max_input_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_input_size);
-        let max_output_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_output_size);
-        let max_untrusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_untrusted_advice_size);
-        let max_trusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_trusted_advice_size);
-        let stack_size = proc_macro2::Literal::u64_unsuffixed(attributes.stack_size);
-        let memory_size = proc_macro2::Literal::u64_unsuffixed(attributes.memory_size);
-        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(attributes.max_trace_length);
+        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(self.attributes.max_trace_length);
         let imports = self.make_imports();
 
         let fn_name = self.get_func_name();
@@ -493,15 +424,7 @@ impl MacroBuilder {
                 #imports
 
                 let (bytecode, memory_init, program_size) = program.decode();
-                let memory_config = MemoryConfig {
-                    max_input_size: #max_input_size,
-                    max_output_size: #max_output_size,
-                    max_untrusted_advice_size: #max_untrusted_advice_size,
-                    max_trusted_advice_size: #max_trusted_advice_size,
-                    stack_size: #stack_size,
-                    memory_size: #memory_size,
-                    program_size: Some(program_size),
-                };
+                let memory_config = program.discovered_memory_config(program_size);
                 let memory_layout = MemoryLayout::new(&memory_config);
 
                 // TODO(moodlezoup): Feed in size parameters via macro
@@ -693,46 +616,107 @@ impl MacroBuilder {
     }
 
     fn make_main_func(&self) -> TokenStream2 {
-        let attributes = parse_attributes(&self.attr);
-        let memory_layout = MemoryLayout::new(&MemoryConfig {
-            max_input_size: attributes.max_input_size,
-            max_output_size: attributes.max_output_size,
-            max_untrusted_advice_size: attributes.max_untrusted_advice_size,
-            max_trusted_advice_size: attributes.max_trusted_advice_size,
-            stack_size: attributes.stack_size,
-            memory_size: attributes.memory_size,
-            // Not needed for the main function, but we need the io region information from MemoryLayout.
-            program_size: Some(0),
-        });
-        let input_start = memory_layout.input_start;
-        let output_start = memory_layout.output_start;
-        let untrusted_advice_start = memory_layout.untrusted_advice_start;
-        let trusted_advice_start = memory_layout.trusted_advice_start;
-        let max_input_len = attributes.max_input_size as usize;
-        let max_output_len = attributes.max_output_size as usize;
-        let max_untrusted_advice_len = attributes.max_untrusted_advice_size as usize;
-        let max_trusted_advice_len = attributes.max_trusted_advice_size as usize;
-        let termination_bit = memory_layout.termination as usize;
+        let declare_io_layout = quote! {
+            extern "C" {
+                static __jolt_max_input_size: u8;
+                static __jolt_max_output_size: u8;
+                static __jolt_max_trusted_advice_size: u8;
+                static __jolt_max_untrusted_advice_size: u8;
+            }
+
+            let max_input_len = core::ptr::addr_of!(__jolt_max_input_size) as usize;
+            let max_output_len = core::ptr::addr_of!(__jolt_max_output_size) as usize;
+            let max_trusted_advice_len = core::ptr::addr_of!(__jolt_max_trusted_advice_size) as usize;
+            let max_untrusted_advice_len = core::ptr::addr_of!(__jolt_max_untrusted_advice_size) as usize;
+
+            // Compute I/O layout exactly as `common::jolt_device::MemoryLayout` does, but without
+            // requiring the ELF program size.
+            #[inline]
+            fn align_up(val: u64, align: u64) -> u64 {
+                if align == 0 {
+                    val
+                } else {
+                    match val % align {
+                        0 => val,
+                        rem => val.checked_add(align - rem).expect("alignment overflow"),
+                    }
+                }
+            }
+
+            let max_trusted_advice_size = align_up(max_trusted_advice_len as u64, 8);
+            let max_untrusted_advice_size = align_up(max_untrusted_advice_len as u64, 8);
+            let max_input_size = align_up(max_input_len as u64, 8);
+            let max_output_size = align_up(max_output_len as u64, 8);
+
+            assert!(
+                max_trusted_advice_size.is_power_of_two() || max_trusted_advice_size == 0,
+                "Trusted advice size must be a power of two (got {max_trusted_advice_size})",
+            );
+            assert!(
+                max_untrusted_advice_size.is_power_of_two() || max_untrusted_advice_size == 0,
+                "Untrusted advice size must be a power of two (got {max_untrusted_advice_size})",
+            );
+
+            let io_region_bytes = max_input_size
+                .checked_add(max_trusted_advice_size)
+                .and_then(|s| s.checked_add(max_untrusted_advice_size))
+                .and_then(|s| s.checked_add(max_output_size))
+                .and_then(|s| s.checked_add(16))
+                .expect("I/O region size overflow");
+
+            let io_region_words = (io_region_bytes / 8).next_power_of_two();
+            let io_bytes = io_region_words.checked_mul(8).expect("I/O region byte count overflow");
+
+            let (trusted_advice_start, trusted_advice_end, untrusted_advice_start, untrusted_advice_end) =
+                if max_trusted_advice_size >= max_untrusted_advice_size {
+                    let trusted_start = jolt::RAM_START_ADDRESS
+                        .checked_sub(io_bytes)
+                        .expect("I/O region exceeds RAM_START_ADDRESS");
+                    let trusted_end = trusted_start
+                        .checked_add(max_trusted_advice_size)
+                        .expect("trusted_advice_end overflow");
+                    let untrusted_start = trusted_end;
+                    let untrusted_end = untrusted_start
+                        .checked_add(max_untrusted_advice_size)
+                        .expect("untrusted_advice_end overflow");
+                    (trusted_start, trusted_end, untrusted_start, untrusted_end)
+                } else {
+                    let untrusted_start = jolt::RAM_START_ADDRESS
+                        .checked_sub(io_bytes)
+                        .expect("I/O region exceeds RAM_START_ADDRESS");
+                    let untrusted_end = untrusted_start
+                        .checked_add(max_untrusted_advice_size)
+                        .expect("untrusted_advice_end overflow");
+                    let trusted_start = untrusted_end;
+                    let trusted_end = trusted_start
+                        .checked_add(max_trusted_advice_size)
+                        .expect("trusted_advice_end overflow");
+                    (trusted_start, trusted_end, untrusted_start, untrusted_end)
+                };
+
+            let input_start = core::cmp::max(untrusted_advice_end, trusted_advice_end);
+            let input_end = input_start.checked_add(max_input_size).expect("input_end overflow");
+            let output_start = input_end;
+            let output_end = output_start.checked_add(max_output_size).expect("output_end overflow");
+            let panic_addr = output_end;
+            let termination_addr = panic_addr.checked_add(8).expect("termination overflow");
+        };
 
         let get_input_slice = quote! {
-            let input_ptr = #input_start as *const u8;
-            let input_slice = unsafe {
-                core::slice::from_raw_parts(input_ptr, #max_input_len)
-            };
+            let input_ptr = input_start as *const u8;
+            let mut input_slice = unsafe { core::slice::from_raw_parts(input_ptr, max_input_len) };
         };
 
         let get_untrusted_advice_slice = quote! {
-            let untrusted_advice_ptr = #untrusted_advice_start as *const u8;
-            let untrusted_advice_slice = unsafe {
-                core::slice::from_raw_parts(untrusted_advice_ptr, #max_untrusted_advice_len)
-            };
+            let untrusted_advice_ptr = untrusted_advice_start as *const u8;
+            let mut untrusted_advice_slice =
+                unsafe { core::slice::from_raw_parts(untrusted_advice_ptr, max_untrusted_advice_len) };
         };
 
         let get_trusted_advice_slice = quote! {
-            let trusted_advice_ptr = #trusted_advice_start as *const u8;
-            let trusted_advice_slice = unsafe {
-                core::slice::from_raw_parts(trusted_advice_ptr, #max_trusted_advice_len)
-            };
+            let trusted_advice_ptr = trusted_advice_start as *const u8;
+            let mut trusted_advice_slice =
+                unsafe { core::slice::from_raw_parts(trusted_advice_ptr, max_trusted_advice_len) };
         };
 
         let pub_args_fetch = self.pub_func_args.iter().map(|(name, ty)| {
@@ -764,16 +748,16 @@ impl MacroBuilder {
         let handle_return = match &self.func.sig.output {
             ReturnType::Default => quote! {},
             ReturnType::Type(_, ty) => quote! {
-                let output_ptr = #output_start as *mut u8;
+                let output_ptr = output_start as *mut u8;
                 let output_slice = unsafe {
-                    core::slice::from_raw_parts_mut(output_ptr, #max_output_len)
+                    core::slice::from_raw_parts_mut(output_ptr, max_output_len)
                 };
 
                 jolt::postcard::to_slice::<#ty>(&to_return, output_slice).unwrap();
             },
         };
 
-        let panic_fn = self.make_panic(memory_layout.panic);
+        let panic_fn = self.make_panic();
         let declare_alloc = self.make_allocator();
 
         // Boot code (_start) is provided by jolt-sdk's boot modules:
@@ -790,7 +774,7 @@ impl MacroBuilder {
             #[cfg(feature = "guest")]
             #[no_mangle]
             pub extern "C" fn main() {
-                let mut offset = 0;
+                #declare_io_layout
                 #get_input_slice
                 #get_untrusted_advice_slice
                 #get_trusted_advice_slice
@@ -801,7 +785,7 @@ impl MacroBuilder {
                 #block
                 #handle_return
                 unsafe {
-                    core::ptr::write_volatile(#termination_bit as *mut u8, 1);
+                    core::ptr::write_volatile(termination_addr as *mut u8, 1);
                 }
             }
 
@@ -809,15 +793,79 @@ impl MacroBuilder {
         }
     }
 
-    fn make_panic(&self, panic_address: u64) -> TokenStream2 {
+    fn make_panic(&self) -> TokenStream2 {
         if self.std {
             // In std mode, provide jolt_panic() which the runtime calls on panic.
             quote! {
                 #[cfg(feature = "guest")]
                 #[no_mangle]
                 pub extern "C" fn jolt_panic() {
+                    extern "C" {
+                        static __jolt_max_input_size: u8;
+                        static __jolt_max_output_size: u8;
+                        static __jolt_max_trusted_advice_size: u8;
+                        static __jolt_max_untrusted_advice_size: u8;
+                    }
+                    let max_input_len = core::ptr::addr_of!(__jolt_max_input_size) as usize;
+                    let max_output_len = core::ptr::addr_of!(__jolt_max_output_size) as usize;
+                    let max_trusted_advice_len = core::ptr::addr_of!(__jolt_max_trusted_advice_size) as usize;
+                    let max_untrusted_advice_len = core::ptr::addr_of!(__jolt_max_untrusted_advice_size) as usize;
+                    #[inline]
+                    fn align_up(val: u64, align: u64) -> u64 {
+                        if align == 0 {
+                            val
+                        } else {
+                            match val % align {
+                                0 => val,
+                                rem => val.checked_add(align - rem).expect("alignment overflow"),
+                            }
+                        }
+                    }
+                    let max_trusted_advice_size = align_up(max_trusted_advice_len as u64, 8);
+                    let max_untrusted_advice_size = align_up(max_untrusted_advice_len as u64, 8);
+                    let max_input_size = align_up(max_input_len as u64, 8);
+                    let max_output_size = align_up(max_output_len as u64, 8);
+                    let io_region_bytes = max_input_size
+                        .checked_add(max_trusted_advice_size)
+                        .and_then(|s| s.checked_add(max_untrusted_advice_size))
+                        .and_then(|s| s.checked_add(max_output_size))
+                        .and_then(|s| s.checked_add(16))
+                        .expect("I/O region size overflow");
+                    let io_region_words = (io_region_bytes / 8).next_power_of_two();
+                    let io_bytes = io_region_words.checked_mul(8).expect("I/O region byte count overflow");
+                    let (_trusted_advice_start, trusted_advice_end, _untrusted_advice_start, untrusted_advice_end) =
+                        if max_trusted_advice_size >= max_untrusted_advice_size {
+                            let trusted_start = jolt::RAM_START_ADDRESS
+                                .checked_sub(io_bytes)
+                                .expect("I/O region exceeds RAM_START_ADDRESS");
+                            let trusted_end = trusted_start
+                                .checked_add(max_trusted_advice_size)
+                                .expect("trusted_advice_end overflow");
+                            let untrusted_start = trusted_end;
+                            let untrusted_end = untrusted_start
+                                .checked_add(max_untrusted_advice_size)
+                                .expect("untrusted_advice_end overflow");
+                            (trusted_start, trusted_end, untrusted_start, untrusted_end)
+                        } else {
+                            let untrusted_start = jolt::RAM_START_ADDRESS
+                                .checked_sub(io_bytes)
+                                .expect("I/O region exceeds RAM_START_ADDRESS");
+                            let untrusted_end = untrusted_start
+                                .checked_add(max_untrusted_advice_size)
+                                .expect("untrusted_advice_end overflow");
+                            let trusted_start = untrusted_end;
+                            let trusted_end = trusted_start
+                                .checked_add(max_trusted_advice_size)
+                                .expect("trusted_advice_end overflow");
+                            (trusted_start, trusted_end, untrusted_start, untrusted_end)
+                        };
+                    let input_start = core::cmp::max(untrusted_advice_end, trusted_advice_end);
+                    let input_end = input_start.checked_add(max_input_size).expect("input_end overflow");
+                    let output_start = input_end;
+                    let output_end = output_start.checked_add(max_output_size).expect("output_end overflow");
+                    let panic_addr = output_end;
                     unsafe {
-                        core::ptr::write_volatile(#panic_address as *mut u8, 1);
+                        core::ptr::write_volatile(panic_addr as *mut u8, 1);
                     }
 
                     loop {}
@@ -830,8 +878,72 @@ impl MacroBuilder {
                 #[cfg(feature = "guest")]
                 #[no_mangle]
                 pub extern "C" fn jolt_panic() {
+                    extern "C" {
+                        static __jolt_max_input_size: u8;
+                        static __jolt_max_output_size: u8;
+                        static __jolt_max_trusted_advice_size: u8;
+                        static __jolt_max_untrusted_advice_size: u8;
+                    }
+                    let max_input_len = core::ptr::addr_of!(__jolt_max_input_size) as usize;
+                    let max_output_len = core::ptr::addr_of!(__jolt_max_output_size) as usize;
+                    let max_trusted_advice_len = core::ptr::addr_of!(__jolt_max_trusted_advice_size) as usize;
+                    let max_untrusted_advice_len = core::ptr::addr_of!(__jolt_max_untrusted_advice_size) as usize;
+                    #[inline]
+                    fn align_up(val: u64, align: u64) -> u64 {
+                        if align == 0 {
+                            val
+                        } else {
+                            match val % align {
+                                0 => val,
+                                rem => val.checked_add(align - rem).expect("alignment overflow"),
+                            }
+                        }
+                    }
+                    let max_trusted_advice_size = align_up(max_trusted_advice_len as u64, 8);
+                    let max_untrusted_advice_size = align_up(max_untrusted_advice_len as u64, 8);
+                    let max_input_size = align_up(max_input_len as u64, 8);
+                    let max_output_size = align_up(max_output_len as u64, 8);
+                    let io_region_bytes = max_input_size
+                        .checked_add(max_trusted_advice_size)
+                        .and_then(|s| s.checked_add(max_untrusted_advice_size))
+                        .and_then(|s| s.checked_add(max_output_size))
+                        .and_then(|s| s.checked_add(16))
+                        .expect("I/O region size overflow");
+                    let io_region_words = (io_region_bytes / 8).next_power_of_two();
+                    let io_bytes = io_region_words.checked_mul(8).expect("I/O region byte count overflow");
+                    let (_trusted_advice_start, trusted_advice_end, _untrusted_advice_start, untrusted_advice_end) =
+                        if max_trusted_advice_size >= max_untrusted_advice_size {
+                            let trusted_start = jolt::RAM_START_ADDRESS
+                                .checked_sub(io_bytes)
+                                .expect("I/O region exceeds RAM_START_ADDRESS");
+                            let trusted_end = trusted_start
+                                .checked_add(max_trusted_advice_size)
+                                .expect("trusted_advice_end overflow");
+                            let untrusted_start = trusted_end;
+                            let untrusted_end = untrusted_start
+                                .checked_add(max_untrusted_advice_size)
+                                .expect("untrusted_advice_end overflow");
+                            (trusted_start, trusted_end, untrusted_start, untrusted_end)
+                        } else {
+                            let untrusted_start = jolt::RAM_START_ADDRESS
+                                .checked_sub(io_bytes)
+                                .expect("I/O region exceeds RAM_START_ADDRESS");
+                            let untrusted_end = untrusted_start
+                                .checked_add(max_untrusted_advice_size)
+                                .expect("untrusted_advice_end overflow");
+                            let trusted_start = untrusted_end;
+                            let trusted_end = trusted_start
+                                .checked_add(max_trusted_advice_size)
+                                .expect("trusted_advice_end overflow");
+                            (trusted_start, trusted_end, untrusted_start, untrusted_end)
+                        };
+                    let input_start = core::cmp::max(untrusted_advice_end, trusted_advice_end);
+                    let input_end = input_start.checked_add(max_input_size).expect("input_end overflow");
+                    let output_start = input_end;
+                    let output_end = output_start.checked_add(max_output_size).expect("output_end overflow");
+                    let panic_addr = output_end;
                     unsafe {
-                        core::ptr::write_volatile(#panic_address as *mut u8, 1);
+                        core::ptr::write_volatile(panic_addr as *mut u8, 1);
                     }
                 }
             }
@@ -891,45 +1003,6 @@ impl MacroBuilder {
                 let mut de = Deserializer::new(data);
                 Deserialize::deserialize(&mut de)
             }
-        }
-    }
-
-    fn make_set_linker_parameters(&self) -> TokenStream2 {
-        let attributes = parse_attributes(&self.attr);
-        let mut code: Vec<TokenStream2> = Vec::new();
-
-        let value = attributes.memory_size;
-        code.push(quote! {
-            program.set_memory_size(#value);
-        });
-
-        let value = attributes.stack_size;
-        code.push(quote! {
-            program.set_stack_size(#value);
-        });
-
-        let value = attributes.max_input_size;
-        code.push(quote! {
-            program.set_max_input_size(#value);
-        });
-
-        let value = attributes.max_output_size;
-        code.push(quote! {
-            program.set_max_output_size(#value);
-        });
-
-        let value = attributes.max_untrusted_advice_size;
-        code.push(quote! {
-            program.set_max_untrusted_advice_size(#value);
-        });
-
-        let value = attributes.max_trusted_advice_size;
-        code.push(quote! {
-            program.set_max_trusted_advice_size(#value);
-        });
-
-        quote! {
-            #(#code;)*
         }
     }
 
@@ -1043,15 +1116,14 @@ impl MacroBuilder {
     }
 
     fn has_wasm_attr(&self) -> bool {
-        parse_attributes(&self.attr).wasm
+        self.attributes.wasm
     }
 
     // TODO(moodlezoup): fix this
     fn make_wasm_function(&self) -> TokenStream2 {
         let fn_name = self.get_func_name();
         let verify_wasm_fn_name = Ident::new(&format!("verify_{fn_name}"), fn_name.span());
-        let attributes = parse_attributes(&self.attr);
-        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(attributes.max_trace_length);
+        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(self.attributes.max_trace_length);
 
         quote! {
             #[wasm_bindgen]

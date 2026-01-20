@@ -50,9 +50,7 @@ pub struct VirtualRegisterAllocator {
     /// Tracks whether the last ECALL took a trap (for EXIT syscalls).
     /// Set by ECALL.trace(), read by ECALL.inline_sequence() to return correct length.
     last_ecall_trap_taken: Arc<Mutex<bool>>,
-    /// Tracks whether the current ECALL is a CSR ECALL (for trap handler setup).
-    /// Set by cpu.handle_syscall(), read by ECALL.trace() to determine inline sequence.
-    is_csr_ecall: Arc<Mutex<bool>>,
+    
 }
 
 impl VirtualRegisterAllocator {
@@ -61,7 +59,7 @@ impl VirtualRegisterAllocator {
             allocated: Arc::new(Mutex::new([false; NUM_VIRTUAL_REGISTERS])),
             pending_clearing_inline: Arc::new(Mutex::new(Vec::new())),
             last_ecall_trap_taken: Arc::new(Mutex::new(false)),
-            is_csr_ecall: Arc::new(Mutex::new(false)),
+            
         }
     }
 
@@ -121,23 +119,7 @@ impl VirtualRegisterAllocator {
         MSTATUS_REGISTER
     }
 
-    /// Set whether the current ECALL is a CSR ECALL (for trap handler setup).
-    /// Called by cpu.handle_syscall() to communicate with ECALL.trace().
-    pub fn set_is_csr_ecall(&self, value: bool) {
-        *self
-            .is_csr_ecall
-            .lock()
-            .expect("Failed to lock is_csr_ecall") = value;
-    }
-
-    /// Get whether the current ECALL is a CSR ECALL.
-    /// Called by ECALL.trace() to determine which inline sequence to use.
-    pub fn is_csr_ecall(&self) -> bool {
-        *self
-            .is_csr_ecall
-            .lock()
-            .expect("Failed to lock is_csr_ecall")
-    }
+    
 
     /// Allocate virtual register that can be used in the inline sequence of
     /// an instruction. Skips reserved registers (32, 33) and uses registers 34-40.

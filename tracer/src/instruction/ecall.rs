@@ -13,6 +13,7 @@ use super::{
     addi::ADDI,
     format::format_i::FormatI,
     jalr::JALR,
+    lui::LUI,
     mul::MUL,
     sub::SUB,
     virtual_advice::VirtualAdvice,
@@ -55,18 +56,7 @@ impl RISCVTrace for ECALL {
         let mut ram_access = ();
         self.execute(cpu, &mut ram_access);
 
-        // Check if this was a CSR ECALL (for setting trap handler address)
-        let is_csr_ecall = cpu.vr_allocator.is_csr_ecall();
-        cpu.vr_allocator.set_is_csr_ecall(false); // reset flag
-
-        // Get trap_handler_advice:
-        // - For CSR ECALL: use a3 (the trap handler address we want to store)
-        // - For regular ECALL: use current reg33 value (preserves it)
-        let trap_handler_advice = if is_csr_ecall {
-            cpu.x[13] as u64 // a3 contains trap handler for CSR ECALL
-        } else {
-            cpu.x[33] as u64 // Current reg33 value for regular ECALLs
-        };
+        let trap_handler_advice = cpu.x[33] as u64; // Current reg33 value
 
         let ecall_result = cpu.pending_csr_result.take().unwrap_or(0) as u64;
 
@@ -85,33 +75,27 @@ impl RISCVTrace for ECALL {
 
         let mut inline_sequence = self.inline_sequence(&cpu.vr_allocator, cpu.xlen);
 
-        // Fill in the advice values:
-        // - Index 0: ecall result (for a0)
-        // - Index 2: return address (for t1, used by trap handler to return)
-        // - Index 4: target PC (for JALR)
-        // - Index 5: trap handler address (for writing to register 33)
-        if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[0] {
-            instr.advice = ecall_result;
-        } else {
-            panic!("Expected VirtualAdvice instruction at index 0, got {:?}", inline_sequence[0]);
+        // Fill in the advice values in order of appearance:
+        // 1) ecall result (written to a0)
+        // 2) return address (written to t1)
+        // 3) target PC (jump destination)
+        // 4) trap handler address (written to reg33)
+        let mut advice_idx = 0;
+        for instr in &mut inline_sequence {
+            let Instruction::VirtualAdvice(v) = instr else {
+                continue;
+            };
+            match advice_idx {
+                0 => v.advice = ecall_result,
+                1 => v.advice = return_addr,
+                2 => v.advice = target_pc,
+                3 => v.advice = trap_handler_advice,
+                _ => {}
+            }
+            advice_idx += 1;
         }
-
-        if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[2] {
-            instr.advice = return_addr;
-        } else {
-            panic!("Expected VirtualAdvice instruction at index 2, got {:?}", inline_sequence[2]);
-        }
-
-        if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[4] {
-            instr.advice = target_pc;
-        } else {
-            panic!("Expected VirtualAdvice instruction at index 4, got {:?}", inline_sequence[4]);
-        }
-
-        if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[5] {
-            instr.advice = trap_handler_advice;
-        } else {
-            panic!("Expected VirtualAdvice instruction at index 5, got {:?}", inline_sequence[5]);
+        if advice_idx < 4 {
+            panic!("ECALL inline sequence missing VirtualAdvice slots (saw {advice_idx})");
         }
 
         let mut trace = trace;
@@ -149,55 +133,96 @@ impl RISCVTrace for ECALL {
         let v_trap_handler_reg = allocator.trap_handler_register();
 
         let ecall_result = allocator.allocate(); // temporary for ecall result
+        let call_id = allocator.allocate(); // saved a0 (call_id) for special-ECALL constraint
         let return_addr = allocator.allocate(); // temporary for return address
         let next_pc = allocator.allocate(); // temporary for target PC
         let trap_handler_advice = allocator.allocate(); // advice for trap handler to write to reg33
         let trap_handler = allocator.allocate(); // copy of register 33 (after write)
         let diff1 = allocator.allocate(); // target_pc - return_addr
         let diff2 = allocator.allocate(); // target_pc - trap_handler
+        let print_const = allocator.allocate();
+        let cycle_const = allocator.allocate();
+        let diff_print = allocator.allocate();
+        let diff_cycle = allocator.allocate();
+        let product = allocator.allocate();
         // Note: product reuses diff1's register after SUB is done
 
         let mut asm = InstrAssembler::new(self.address, self.is_compressed, xlen, allocator);
 
-        // Index 0: Get ecall result as advice and write to temp register
+        // Get ecall result as advice and write to temp register
         asm.emit_j::<VirtualAdvice>(*ecall_result, 0);
 
-        // Index 1: Move result to a0 (register 10)
+        // Save current a0 into a temp register.
+        // This is meaningful only for non-trap ECALLs (Jolt special ECALLs), because trap-taking
+        // ECALLs may overwrite a0 during trap handling. We gate the constraint so it only matters
+        // when the trap is NOT taken.
+        asm.emit_i::<ADDI>(*call_id, 10, 0);
+
+        // Move result to a0 (register 10)
         asm.emit_i::<ADDI>(10, *ecall_result, 0);
 
-        // Index 2: Get return address (ECALL_addr+4) as advice and write to temp register
+        // Get return address (ECALL_addr+4) as advice and write to temp register
         asm.emit_j::<VirtualAdvice>(*return_addr, 0);
 
-        // Index 3: Move return address to t1 (register 6) for trap handler to use
+        // Move return address to t1 (register 6) for trap handler to use
         asm.emit_i::<ADDI>(6, *return_addr, 0);
 
-        // Index 4: Get target PC as advice
+        // Get target PC as advice
         asm.emit_j::<VirtualAdvice>(*next_pc, 0);
 
-        // Index 5: Get trap handler address as advice
+        // Get trap handler address as advice
         // - For CSR ECALL: this is a3 (the trap handler address being set)
         // - For regular ECALL: this is current reg33 value (preserves it)
         asm.emit_j::<VirtualAdvice>(*trap_handler_advice, 0);
 
-        // Index 6: Write trap handler advice to register 33
+        // Write trap handler advice to register 33
         // This sets reg33 for CSR ECALL, or preserves it for regular ECALL
         asm.emit_i::<ADDI>(v_trap_handler_reg, *trap_handler_advice, 0);
 
-        // Index 7: Read trap handler from register 33
+        // Read trap handler from register 33
         asm.emit_i::<ADDI>(*trap_handler, v_trap_handler_reg, 0);
 
         // Verify: (target_pc == return_addr) OR (target_pc == trap_handler)
         // Compute: (target_pc - return_addr) * (target_pc - trap_handler) == 0
-        // Index 8: diff1 = target_pc - return_addr
+        // diff1 = target_pc - return_addr
         asm.emit_r::<SUB>(*diff1, *next_pc, *return_addr);
-        // Index 9: diff2 = target_pc - trap_handler
+        // diff2 = target_pc - trap_handler
         asm.emit_r::<SUB>(*diff2, *next_pc, *trap_handler);
-        // Index 10: product = diff1 * diff2 (reuse diff1 register)
+        // product = diff1 * diff2 (reuse diff1 register)
         asm.emit_r::<MUL>(*diff1, *diff1, *diff2);
-        // Index 11: Assert product == 0
+        // Assert product == 0
         asm.emit_b::<VirtualAssertEQ>(*diff1, 0, 0);
 
-        // Index 12: Jump to target PC. JALR has Jump=true, so the NextUnexpPCUpdateOtherwise
+        // Additional soundness constraint for emulator-intercepted Jolt ECALLs:
+        // - If the trap is NOT taken (target_pc == return_addr), then call_id (a0) must be one of:
+        //     JOLT_PRINT_ECALL_NUM or JOLT_CYCLE_TRACK_ECALL_NUM.
+        // - If the trap IS taken (target_pc == trap_handler), this constraint is gated off.
+        //
+        // We gate with diff2 = target_pc - trap_handler:
+        // - trap taken => diff2 == 0 => product == 0 regardless of call_id
+        // - no trap    => diff2 != 0 => require (call_id == PRINT) OR (call_id == CYCLE)
+        //
+        // Enforced as: diff2 * (call_id - PRINT) * (call_id - CYCLE) == 0
+        //
+        // Load PRINT constant into a register: 0x505249 = 0x505000 + 0x249
+        asm.emit_u::<LUI>(*print_const, 0x505000);
+        asm.emit_i::<ADDI>(*print_const, *print_const, 0x249);
+        // Load CYCLE constant into a register: 0x0C7C1E = 0x0C8000 - 0x3E2
+        asm.emit_u::<LUI>(*cycle_const, 0x0C8000);
+        asm.emit_i::<ADDI>(*cycle_const, *cycle_const, (-0x3E2i64) as u64);
+
+        // diff_print = call_id - PRINT
+        asm.emit_r::<SUB>(*diff_print, *call_id, *print_const);
+        // diff_cycle = call_id - CYCLE
+        asm.emit_r::<SUB>(*diff_cycle, *call_id, *cycle_const);
+        // product = diff2 * diff_print
+        asm.emit_r::<MUL>(*product, *diff2, *diff_print);
+        // product = product * diff_cycle
+        asm.emit_r::<MUL>(*product, *product, *diff_cycle);
+        // Assert product == 0
+        asm.emit_b::<VirtualAssertEQ>(*product, 0, 0);
+
+        // Jump to target PC. JALR has Jump=true, so the NextUnexpPCUpdateOtherwise
         // constraint won't fire (guard is !(ShouldBranch || Jump) which is false).
         // Using rd=0 means we don't save the return address.
         asm.emit_i::<JALR>(0, *next_pc, 0);

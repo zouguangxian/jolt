@@ -29,6 +29,7 @@ members = [
     "common",
     "jolt-platform",
     "jolt-sdk",
+    "crates/cargo-jolt",
     "jolt-sdk/macros",
     "jolt-inlines/sha2",
     "jolt-inlines/keccak256",
@@ -147,6 +148,8 @@ jolt-optimizations = { git = "https://github.com/a16z/arkworks-algebra", branch 
 dory = { git = "https://github.com/markosg04/dory", branch = "dev/twist-shout" }
 
 # Core Utilities
+log = "0.4"
+env_logger = "0.10"
 clap = { version = "4.5.4", features = ["derive"] }
 eyre = "0.6.12"
 anyhow = "1.0.97"
@@ -175,6 +178,7 @@ serde_json = { version = "1.0.108", default-features = false }
 rmp-serde = "1.3.0"
 bincode = "1.3.3"
 postcard = { version = "1.0.8", default-features = false }
+toml = "0.8"
 toml_edit = "0.22.14"
 
 # Numeric
@@ -232,6 +236,9 @@ iai-callgrind = "0.10.2"
 serial_test = "3.2.0"
 
 # Internal dependencies
+zeroos = { path = "../ZeroOS/crates/zeroos", default-features = false }
+zeroos-arch-riscv = { path = "../ZeroOS/crates/zeroos-arch-riscv", default-features = false }
+zeroos-foundation = { path = "../ZeroOS/crates/zeroos-foundation", default-features = false }
 common = { path = "./common", default-features = false }
 tracer = { path = "./tracer", default-features = false }
 jolt-core = { path = "./jolt-core", default-features = false }

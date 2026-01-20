@@ -25,8 +25,6 @@ use jolt_platform::{
     JOLT_PRINT_ECALL_NUM, JOLT_PRINT_LINE, JOLT_PRINT_STRING,
 };
 
-const JOLT_CSR_ECALL_NUM: u32 = 0x435352; // "CSR" in hex (ASCII)
-const JOLT_RET_ECALL_NUM: u32 = 0x524554; // "RET" in hex (ASCII) - return from trap
 #[cfg(feature = "std")]
 use std::collections::VecDeque;
 
@@ -567,21 +565,7 @@ impl Cpu {
                 let _ = self.handle_jolt_print(string_ptr, string_len, event_type as u8);
 
                 return false;
-            } else if call_id == JOLT_CSR_ECALL_NUM {
-                // CSR ECALL for setting trap handler address.
-                // We write to mtvec CSR for emulation purposes (so handle_trap knows where to jump).
-                // We also set a flag so the ECALL inline sequence stores the address (from a3)
-                // into the trap handler virtual register (register 33) for proof verification.
-                // The proof verifies against virtual register 33, not the CSR value.
-                let trap_handler_addr = self.x[13] as u64; // a3 contains the trap handler address
-                self.write_csr_raw(CSR_MTVEC_ADDRESS, trap_handler_addr);
-
-                self.vr_allocator.set_is_csr_ecall(true);
-                self.pending_csr_result = Some(0);
-
-                return false; // we don't take the trap
             }
-
             // RET ECALL is no longer needed - trap handler returns via JALR t1
             // The return address is passed in t1 by the ECALL inline sequence.
             // } else if call_id == JOLT_RET_ECALL_NUM {
