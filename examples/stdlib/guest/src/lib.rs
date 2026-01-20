@@ -20,7 +20,7 @@ use jolt::jolt_println;
 /// Parallel sum of squares using rayon - same as ZeroOS std-smoke
 /// Computes: 1² + 2² + 3² + ... + n²
 /// For n=101, expected result = 348551
-#[jolt::provable(max_trace_length = 65536, stack_size = 1048576)]
+#[jolt::provable(max_trace_length = 65536)]
 fn parallel_sum_of_squares(n: u32) -> u64 {
     jolt_println!("Computing parallel sum of squares from 1 to {}", n);
 

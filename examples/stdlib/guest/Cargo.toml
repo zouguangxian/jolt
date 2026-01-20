@@ -13,3 +13,19 @@ jolt = { package = "jolt-sdk", path = "../../../jolt-sdk", features = [
 rayon = "1.10"
 # Boot code is now provided by jolt-sdk's guest_std_boot module
 # bolt = { path = "/Users/sdhawan/Work/ZeroKernel/crates/bolt", features = ["std", "boot-symbols"] }
+
+[package.metadata.jolt.std]
+heap_size = "64MiB"
+stack_size = "8MiB"
+max_input_size = 4096
+max_output_size = 4096
+max_trusted_advice_size = 4096
+max_untrusted_advice_size = 4096
+
+[package.metadata.jolt.no-std]
+heap_size = "64MiB"
+stack_size = "8MiB"
+max_input_size = 4096
+max_output_size = 4096
+max_trusted_advice_size = 4096
+max_untrusted_advice_size = 4096

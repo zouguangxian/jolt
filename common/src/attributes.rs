@@ -29,13 +29,6 @@ pub fn parse_attributes(attr: &Vec<NestedMeta>) -> Attributes {
                 };
                 let ident = &path.get_ident().expect("Expected identifier");
                 match ident.to_string().as_str() {
-                    // Legacy sizing knobs (now ignored): sizing is derived from linker/ELF symbols.
-                    "memory_size"
-                    | "stack_size"
-                    | "max_input_size"
-                    | "max_output_size"
-                    | "max_trusted_advice_size"
-                    | "max_untrusted_advice_size" => None,
                     "max_trace_length" => attributes.insert("max_trace_length", value),
                     _ => panic!("invalid attribute"),
                 };

@@ -21,12 +21,6 @@ struct JoltMetadata {
     stack_size: Option<String>,
     #[serde(rename = "isa")]
     isa: Option<String>,
-    #[serde(rename = "io")]
-    io: Option<JoltIoMetadata>,
-}
-
-#[derive(serde::Deserialize, Debug, Default, Clone)]
-struct JoltIoMetadata {
     #[serde(rename = "max_input_size")]
     max_input_size: Option<u64>,
     #[serde(rename = "max_output_size")]
@@ -219,19 +213,17 @@ fn build_command(args: JoltBuildArgs) -> Result<()> {
     let mut max_trusted = DEFAULT_MAX_TRUSTED_ADVICE_SIZE;
     let mut max_untrusted = DEFAULT_MAX_UNTRUSTED_ADVICE_SIZE;
 
-    if let Some(io) = metadata.io {
-        max_input = io
-            .max_input_size
-            .unwrap_or(DEFAULT_MAX_INPUT_SIZE as u64) as usize;
-        max_output = io
-            .max_output_size
-            .unwrap_or(DEFAULT_MAX_OUTPUT_SIZE as u64) as usize;
-        max_trusted = io
-            .max_trusted_advice_size
-            .unwrap_or(DEFAULT_MAX_TRUSTED_ADVICE_SIZE as u64) as usize;
-        max_untrusted = io
-            .max_untrusted_advice_size
-            .unwrap_or(DEFAULT_MAX_UNTRUSTED_ADVICE_SIZE as u64) as usize;
+    if let Some(size) = metadata.max_input_size {
+        max_input = size as usize;
+    }
+    if let Some(size) = metadata.max_output_size {
+        max_output = size as usize;
+    }
+    if let Some(size) = metadata.max_trusted_advice_size {
+        max_trusted = size as usize;
+    }
+    if let Some(size) = metadata.max_untrusted_advice_size {
+        max_untrusted = size as usize;
     }
 
     if let Some(s) = &args.max_input_size {
@@ -506,8 +498,17 @@ fn parse_jolt_metadata(workspace_root: &PathBuf, package: &str, mode: StdMode) -
         if mode_metadata.isa.is_some() {
             metadata.isa = mode_metadata.isa;
         }
-        if mode_metadata.io.is_some() {
-            metadata.io = mode_metadata.io;
+        if mode_metadata.max_input_size.is_some() {
+            metadata.max_input_size = mode_metadata.max_input_size;
+        }
+        if mode_metadata.max_output_size.is_some() {
+            metadata.max_output_size = mode_metadata.max_output_size;
+        }
+        if mode_metadata.max_trusted_advice_size.is_some() {
+            metadata.max_trusted_advice_size = mode_metadata.max_trusted_advice_size;
+        }
+        if mode_metadata.max_untrusted_advice_size.is_some() {
+            metadata.max_untrusted_advice_size = mode_metadata.max_untrusted_advice_size;
         }
     }
 
