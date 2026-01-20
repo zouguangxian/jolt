@@ -669,7 +669,8 @@ impl MacroBuilder {
 
             let (trusted_advice_start, trusted_advice_end, untrusted_advice_start, untrusted_advice_end) =
                 if max_trusted_advice_size >= max_untrusted_advice_size {
-                    let trusted_start = jolt::RAM_START_ADDRESS
+                    const JOLT_RAM_START_ADDRESS: u64 = 0x8000_0000;
+                    let trusted_start = JOLT_RAM_START_ADDRESS
                         .checked_sub(io_bytes)
                         .expect("I/O region exceeds RAM_START_ADDRESS");
                     let trusted_end = trusted_start
@@ -681,7 +682,8 @@ impl MacroBuilder {
                         .expect("untrusted_advice_end overflow");
                     (trusted_start, trusted_end, untrusted_start, untrusted_end)
                 } else {
-                    let untrusted_start = jolt::RAM_START_ADDRESS
+                    const JOLT_RAM_START_ADDRESS: u64 = 0x8000_0000;
+                    let untrusted_start = JOLT_RAM_START_ADDRESS
                         .checked_sub(io_bytes)
                         .expect("I/O region exceeds RAM_START_ADDRESS");
                     let untrusted_end = untrusted_start
@@ -835,7 +837,8 @@ impl MacroBuilder {
                     let io_bytes = io_region_words.checked_mul(8).expect("I/O region byte count overflow");
                     let (_trusted_advice_start, trusted_advice_end, _untrusted_advice_start, untrusted_advice_end) =
                         if max_trusted_advice_size >= max_untrusted_advice_size {
-                            let trusted_start = jolt::RAM_START_ADDRESS
+                            const JOLT_RAM_START_ADDRESS: u64 = 0x8000_0000;
+                            let trusted_start = JOLT_RAM_START_ADDRESS
                                 .checked_sub(io_bytes)
                                 .expect("I/O region exceeds RAM_START_ADDRESS");
                             let trusted_end = trusted_start
@@ -847,7 +850,8 @@ impl MacroBuilder {
                                 .expect("untrusted_advice_end overflow");
                             (trusted_start, trusted_end, untrusted_start, untrusted_end)
                         } else {
-                            let untrusted_start = jolt::RAM_START_ADDRESS
+                            const JOLT_RAM_START_ADDRESS: u64 = 0x8000_0000;
+                            let untrusted_start = JOLT_RAM_START_ADDRESS
                                 .checked_sub(io_bytes)
                                 .expect("I/O region exceeds RAM_START_ADDRESS");
                             let untrusted_end = untrusted_start
@@ -913,7 +917,8 @@ impl MacroBuilder {
                     let io_bytes = io_region_words.checked_mul(8).expect("I/O region byte count overflow");
                     let (_trusted_advice_start, trusted_advice_end, _untrusted_advice_start, untrusted_advice_end) =
                         if max_trusted_advice_size >= max_untrusted_advice_size {
-                            let trusted_start = jolt::RAM_START_ADDRESS
+                            const JOLT_RAM_START_ADDRESS: u64 = 0x8000_0000;
+                            let trusted_start = JOLT_RAM_START_ADDRESS
                                 .checked_sub(io_bytes)
                                 .expect("I/O region exceeds RAM_START_ADDRESS");
                             let trusted_end = trusted_start
@@ -925,7 +930,8 @@ impl MacroBuilder {
                                 .expect("untrusted_advice_end overflow");
                             (trusted_start, trusted_end, untrusted_start, untrusted_end)
                         } else {
-                            let untrusted_start = jolt::RAM_START_ADDRESS
+                            const JOLT_RAM_START_ADDRESS: u64 = 0x8000_0000;
+                            let untrusted_start = JOLT_RAM_START_ADDRESS
                                 .checked_sub(io_bytes)
                                 .expect("I/O region exceeds RAM_START_ADDRESS");
                             let untrusted_end = untrusted_start

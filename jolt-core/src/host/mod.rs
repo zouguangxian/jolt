@@ -15,6 +15,11 @@ pub const TOOLCHAIN_VERSION: &str = "1.89.0";
 pub struct Program {
     guest: String,
     func: Option<String>,
+    /// Total linked RAM size (i.e., linker `MEMORY_SIZE`), if discoverable from ELF symbols.
+    ///
+    /// For our linker templates, `__stack_top` is placed at the top of RAM, so:
+    ///   ram_size = __stack_top - RAM_START_ADDRESS.
+    ram_size: Option<u64>,
     memory_size: u64,
     stack_size: u64,
     heap_size: u64,

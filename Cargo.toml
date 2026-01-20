@@ -237,8 +237,6 @@ serial_test = "3.2.0"
 
 # Internal dependencies
 zeroos = { path = "../ZeroOS/crates/zeroos", default-features = false }
-zeroos-arch-riscv = { path = "../ZeroOS/crates/zeroos-arch-riscv", default-features = false }
-zeroos-foundation = { path = "../ZeroOS/crates/zeroos-foundation", default-features = false }
 common = { path = "./common", default-features = false }
 tracer = { path = "./tracer", default-features = false }
 jolt-core = { path = "./jolt-core", default-features = false }

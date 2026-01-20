@@ -530,6 +530,13 @@ impl MemoryLayout {
 
     /// Returns the total emulator memory
     pub fn get_total_memory_size(&self) -> u64 {
-        self.memory_size + self.stack_size + STACK_CANARY_SIZE
+        // The emulator allocates a single contiguous RAM array starting at `RAM_START_ADDRESS`,
+        // so we must cover the entire address range up to `memory_end`.
+        //
+        // Note: `memory_end` already accounts for `program_size` and `stack_size`:
+        //   memory_end = RAM_START + program_size + stack_size + memory_size
+        self.memory_end
+            .saturating_sub(RAM_START_ADDRESS)
+            .max(self.memory_size + self.stack_size + STACK_CANARY_SIZE)
     }
 }

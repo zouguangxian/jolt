@@ -12,8 +12,9 @@ const RISCV_REGISTER_BASE: u8 = RISCV_REGISTER_COUNT;
 /// Layout of virtual registers:
 /// - Register 32: Reservation address for LR/SC (persistent, not allocated)
 /// - Register 33-38: CSR registers (mtvec, mscratch, mepc, mcause, mtval, mstatus)
-/// - Registers 39-45: Temporary registers for inline sequences (allocate())
-/// - Registers 46+: Registers for larger inlines (allocate_for_inline())
+/// - Register 39: CSRRW saved-rs1 (persistent, not allocated; used when rd == rs1)
+/// - Registers 40-46: Temporary registers for inline sequences (allocate())
+/// - Registers 47+: Registers for larger inlines (allocate_for_inline())
 ///
 /// The reserved registers (32, 33) are at the front but skipped by allocate()
 /// to ensure they persist across instructions.
@@ -35,11 +36,18 @@ const MCAUSE_REGISTER: u8 = RISCV_REGISTER_BASE + 4;       // register 36
 const MTVAL_REGISTER: u8 = RISCV_REGISTER_BASE + 5;        // register 37
 const MSTATUS_REGISTER: u8 = RISCV_REGISTER_BASE + 6;      // register 38
 
+/// CSRRW saved-rs1 register (register 39).
+///
+/// When tracing CSRRW with rd == rs1 (and rd != 0), the instruction overwrites rs1 with old_CSR.
+/// We stash the original rs1 value into this virtual register before executing CSRRW so the
+/// proof inline sequence can still assert the correct write value.
+const CSRRW_SAVED_RS1_REGISTER: u8 = RISCV_REGISTER_BASE + 7; // register 39
+
 /// Number of reserved virtual registers that are NOT allocated.
 /// Includes: reservation (32), mtvec (33), mscratch (34), mepc (35),
-///           mcause (36), mtval (37), mstatus (38)
-/// allocate() skips these and starts from register 39.
-const NUM_RESERVED_VIRTUAL_REGISTERS: usize = 7;
+///           mcause (36), mtval (37), mstatus (38), csrrw_saved_rs1 (39)
+/// allocate() skips these and starts from register 40.
+const NUM_RESERVED_VIRTUAL_REGISTERS: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct VirtualRegisterAllocator {
@@ -119,10 +127,15 @@ impl VirtualRegisterAllocator {
         MSTATUS_REGISTER
     }
 
+    /// Get the CSRRW saved-rs1 register (register 39).
+    pub fn csrrw_saved_rs1_register(&self) -> u8 {
+        CSRRW_SAVED_RS1_REGISTER
+    }
+
     
 
     /// Allocate virtual register that can be used in the inline sequence of
-    /// an instruction. Skips reserved registers (32, 33) and uses registers 34-40.
+    /// an instruction. Skips reserved registers and uses the per-instruction temp pool.
     pub(crate) fn allocate(&self) -> VirtualRegisterGuard {
         for (i, allocated) in self
             .allocated
@@ -130,8 +143,8 @@ impl VirtualRegisterAllocator {
             .expect("Failed to lock virtual register allocator")
             .iter_mut()
             .enumerate()
-            .skip(NUM_RESERVED_VIRTUAL_REGISTERS) // Skip registers 32, 33
-            .take(NUM_VIRTUAL_INSTRUCTION_REGISTERS) // Take 7 registers (34-40)
+            .skip(NUM_RESERVED_VIRTUAL_REGISTERS)
+            .take(NUM_VIRTUAL_INSTRUCTION_REGISTERS)
         {
             if !*allocated {
                 *allocated = true;
@@ -145,9 +158,8 @@ impl VirtualRegisterAllocator {
     }
 
     /// Allocate virtual register that can be used in an inline.
-    /// Uses registers 41+ (skips reserved 32-33 and instruction 34-40).
+    /// Uses the larger inline pool (after reserved + per-instruction temps).
     pub fn allocate_for_inline(&self) -> VirtualRegisterGuard {
-        // Skip reserved registers (32-33) and instruction registers (34-40)
         let skip_count = NUM_RESERVED_VIRTUAL_REGISTERS + NUM_VIRTUAL_INSTRUCTION_REGISTERS;
         for (i, allocated) in self
             .allocated

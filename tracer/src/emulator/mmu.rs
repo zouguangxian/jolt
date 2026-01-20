@@ -181,10 +181,11 @@ impl Mmu {
 
             // then check for device I/O pages
             let ok = if is_write {
-                // stores only to output/panic/termination
+                // stores only to output/panic/termination OR the zero-padding range
                 jolt_device.is_output(ea)
                     || jolt_device.is_panic(ea)
                     || jolt_device.is_termination(ea)
+                    || ea <= RAM_START_ADDRESS - 8
             } else {
                 // loads from input/advice/output/panic/termination OR zero-padding range
                 jolt_device.is_input(ea)
@@ -774,7 +775,14 @@ impl Mmu {
                 self.assert_effective_store_address(effective_address);
                 self.memory.write_byte(effective_address, value)
             }
-            false => match effective_address {
+            false => {
+                // Allow "zero-padding" below RAM_START_ADDRESS for reads, but treat writes as a no-op.
+                // This matches the intent of the padding hack in `assert_effective_address` without
+                // routing these addresses into `JoltDevice` (which expects I/O-mapped addresses).
+                if effective_address <= RAM_START_ADDRESS - 8 {
+                    return;
+                }
+                match effective_address {
                 0x02000000..=0x0200ffff => panic!("store_raw:clint is unsupported."),
                 0x0c000000..=0x0fffffff => panic!("store_raw:plic is unsupported."),
                 0x10000000..=0x100000ff => panic!("store_raw:UART is unsupported."),
@@ -787,7 +795,8 @@ impl Mmu {
 
                     panic!("Store Failed: Unknown memory mapping {effective_address:X}.");
                 }
-            },
+                }
+            }
         };
     }
 

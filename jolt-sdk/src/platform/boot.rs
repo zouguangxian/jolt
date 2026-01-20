@@ -25,7 +25,7 @@ pub extern "C" fn __platform_bootstrap() {
         let heap_start = core::ptr::addr_of!(__heap_start) as usize;
         let heap_end = core::ptr::addr_of!(__heap_end) as usize;
         let heap_size = heap_end.saturating_sub(heap_start);
-        foundation::kfn::memory::kinit(heap_start, heap_size);
+        zeroos::foundation::kfn::memory::kinit(heap_start, heap_size);
         // Stack boundaries are defined by the linker script; kept available for debugging.
         let _stack_top = core::ptr::addr_of!(__stack_top) as usize;
         let _stack_bottom = core::ptr::addr_of!(__stack_bottom) as usize;
@@ -43,7 +43,7 @@ pub extern "C" fn __platform_bootstrap() {
             // - Before entering libc (musl): park anchor in mscratch and clear tp (TLS owns tp).
             #[cfg(feature = "thread")]
             let boot_thread_anchor: usize = {
-                let anchor = foundation::kfn::scheduler::kinit();
+                let anchor = zeroos::foundation::kfn::scheduler::kinit();
 
                 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
                 unsafe {
@@ -56,7 +56,7 @@ pub extern "C" fn __platform_bootstrap() {
 
             #[cfg(feature = "vfs")]
             {
-                foundation::kfn::vfs::kinit();
+                zeroos::foundation::kfn::vfs::kinit();
 
                 #[cfg(feature = "vfs-device-console")]
                 {
@@ -68,7 +68,7 @@ pub extern "C" fn __platform_bootstrap() {
             #[cfg(feature = "random")]
             {
                 // SECURITY: fixed seed for deterministic zk proofs.
-                foundation::kfn::random::kinit(0);
+                zeroos::foundation::kfn::random::kinit(0);
             }
 
             #[cfg(all(feature = "thread", feature = "os-linux"))]
@@ -76,7 +76,10 @@ pub extern "C" fn __platform_bootstrap() {
                 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
                 unsafe {
                     core::arch::asm!("csrw mscratch, {0}", in(reg) boot_thread_anchor, options(nostack));
-                    core::arch::asm!("mv tp, x0", options(nostack));
+                    // NOTE: On real Linux, the kernel initializes `tp` for TLS before entering user
+                    // code. In our Jolt/unikernel environment, leaving `tp` as zero causes TLS
+                    // accesses to target address 0, which the emulator rejects. Keep `tp` as the
+                    // thread anchor so TLS-relative accesses land in mapped memory.
                 }
             }
         }

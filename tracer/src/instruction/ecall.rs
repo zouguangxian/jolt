@@ -132,19 +132,21 @@ impl RISCVTrace for ECALL {
     ) -> Vec<Instruction> {
         let v_trap_handler_reg = allocator.trap_handler_register();
 
-        let ecall_result = allocator.allocate(); // temporary for ecall result
-        let call_id = allocator.allocate(); // saved a0 (call_id) for special-ECALL constraint
-        let return_addr = allocator.allocate(); // temporary for return address
-        let next_pc = allocator.allocate(); // temporary for target PC
-        let trap_handler_advice = allocator.allocate(); // advice for trap handler to write to reg33
-        let trap_handler = allocator.allocate(); // copy of register 33 (after write)
-        let diff1 = allocator.allocate(); // target_pc - return_addr
-        let diff2 = allocator.allocate(); // target_pc - trap_handler
-        let print_const = allocator.allocate();
-        let cycle_const = allocator.allocate();
-        let diff_print = allocator.allocate();
-        let diff_cycle = allocator.allocate();
-        let product = allocator.allocate();
+        // ECALL's inline sequence is relatively large; use the "inline" allocator pool (46+)
+        // rather than the limited per-instruction temp pool (39-45).
+        let ecall_result = allocator.allocate_for_inline(); // temporary for ecall result
+        let call_id = allocator.allocate_for_inline(); // saved a0 (call_id) for special-ECALL constraint
+        let return_addr = allocator.allocate_for_inline(); // temporary for return address
+        let next_pc = allocator.allocate_for_inline(); // temporary for target PC
+        let trap_handler_advice = allocator.allocate_for_inline(); // advice for trap handler to write to reg33
+        let trap_handler = allocator.allocate_for_inline(); // copy of register 33 (after write)
+        let diff1 = allocator.allocate_for_inline(); // target_pc - return_addr
+        let diff2 = allocator.allocate_for_inline(); // target_pc - trap_handler
+        let print_const = allocator.allocate_for_inline();
+        let cycle_const = allocator.allocate_for_inline();
+        let diff_print = allocator.allocate_for_inline();
+        let diff_cycle = allocator.allocate_for_inline();
+        let product = allocator.allocate_for_inline();
         // Note: product reuses diff1's register after SUB is done
 
         let mut asm = InstrAssembler::new(self.address, self.is_compressed, xlen, allocator);

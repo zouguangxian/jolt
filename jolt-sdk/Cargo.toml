@@ -16,6 +16,15 @@ edition = "2021"
 
 [features]
 # Jolt guest features (aligned with spike-platform)
+guest-nostd = [
+    "arch-riscv",
+    "runtime-nostd",
+    "memory",
+    "random",
+    "postcard/alloc",
+    "serde/alloc",
+]
+
 guest-std = [
     "arch-riscv",
     "os-linux",
@@ -35,7 +44,8 @@ debug = ["zeroos/debug"]
 bounds-checks = ["zeroos/bounds-checks"]
 arch-riscv = ["zeroos/arch-riscv"]
 os-linux = ["zeroos/os-linux"]
-runtime-musl = ["zeroos/runtime-musl", "dep:zeroos-runtime-musl"]
+runtime-musl = ["zeroos/runtime-musl"]
+runtime-nostd = ["zeroos/runtime-nostd"]
 backtrace = ["runtime-musl", "zeroos/backtrace"]
 memory = ["zeroos/alloc-linked-list"]
 vfs = ["zeroos/vfs"]
@@ -81,17 +91,6 @@ rand = { workspace = true, optional = true }
 # Guest boot code dependencies (from ZeroOS) - RISC-V target only
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 zeroos = { workspace = true }
-zeroos-arch-riscv = { workspace = true }
-
-
-
-
-
-
-# ZeroOS jolt-platform: provides __platform_bootstrap, syscall routing, VFS, etc.
-# Features are controlled by jolt-sdk features (guest-std enables os-linux, default enables memory)
-zeroos-foundation = { workspace = true }
-zeroos-runtime-musl = { path = "../../ZeroOS/crates/zeroos-runtime-musl", optional = true }
 linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin_nightly"], optional = true }
 
 [dev-dependencies]

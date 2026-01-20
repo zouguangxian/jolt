@@ -1,5 +1,8 @@
-use foundation::kfn::trap::ksyscall;
-use zeroos_arch_riscv::{Exception, TrapFrame};
+use zeroos::arch_riscv::Exception;
+use zeroos::TrapFrame;
+
+#[cfg(feature = "os-linux")]
+use zeroos::foundation::kfn::trap::ksyscall;
 
 #[inline(always)]
 fn mcause_is_interrupt(mcause: usize) -> bool {
@@ -43,16 +46,24 @@ pub unsafe extern "C" fn trap_handler(regs: *mut TrapFrame) {
             let pc = (*regs).mepc;
             (*regs).mepc = pc + 4;
 
-            let ret = ksyscall(
-                (*regs).a0,
-                (*regs).a1,
-                (*regs).a2,
-                (*regs).a3,
-                (*regs).a4,
-                (*regs).a5,
-                (*regs).a7,
-            );
-            (*regs).a0 = ret as usize;
+            #[cfg(feature = "os-linux")]
+            {
+                let ret = ksyscall(
+                    (*regs).a0,
+                    (*regs).a1,
+                    (*regs).a2,
+                    (*regs).a3,
+                    (*regs).a4,
+                    (*regs).a5,
+                    (*regs).a7,
+                );
+                (*regs).a0 = ret as usize;
+            }
+
+            #[cfg(not(feature = "os-linux"))]
+            {
+                crate::platform::exit(1);
+            }
         }
         code if code == (Exception::Breakpoint as usize) => {
             advance_mepc_for_breakpoint(regs);

@@ -2,6 +2,20 @@
 
 extern crate jolt_sdk_macros;
 
+// For no-std guest builds that pull in `alloc` (e.g., via postcard/serde),
+// we must provide a global allocator and a panic handler somewhere in the final binary.
+// Putting them in `jolt-sdk` keeps guest crates minimal.
+#[cfg(all(feature = "guest-nostd", not(feature = "host"), target_os = "none"))]
+#[global_allocator]
+static JOLT_ALLOCATOR: ::zeroos::alloc::System = ::zeroos::alloc::System;
+
+#[cfg(all(feature = "guest-nostd", not(feature = "host"), target_os = "none"))]
+#[panic_handler]
+fn __jolt_panic_handler(_info: &core::panic::PanicInfo) -> ! {
+    // Best-effort termination for the emulator.
+    crate::platform::platform_exit(1)
+}
+
 // Standard ZeroOS architecture and runtimes for guest builds
 #[cfg(all(not(feature = "host"), target_arch = "riscv64"))]
 pub mod platform;

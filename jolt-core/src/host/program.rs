@@ -30,6 +30,7 @@ impl Program {
         Self {
             guest: guest.to_string(),
             func: None,
+            ram_size: None,
             memory_size: DEFAULT_MEMORY_SIZE,
             stack_size: DEFAULT_STACK_SIZE,
             heap_size: DEFAULT_HEAP_SIZE,
@@ -92,8 +93,15 @@ impl Program {
     /// After `Program::build*`, these sizes are expected to have been updated from ELF symbols
     /// (e.g., `__jolt_max_*`, `__heap_*`, `__stack_*`), making the ELF the source of truth.
     pub fn discovered_memory_config(&self, program_size: u64) -> MemoryConfig {
+        let memory_size = if let Some(ram_size) = self.ram_size {
+            ram_size
+                .saturating_sub(program_size)
+                .saturating_sub(self.stack_size)
+        } else {
+            self.memory_size
+        };
         MemoryConfig {
-            memory_size: self.memory_size,
+            memory_size,
             stack_size: self.stack_size,
             max_input_size: self.max_input_size,
             max_untrusted_advice_size: self.max_untrusted_advice_size,
@@ -158,6 +166,10 @@ impl Program {
                 info!("Discovered stack size from ELF: {} bytes", size);
                 self.stack_size = size;
             }
+            if let Some(top) = stack_top {
+                // In our linker templates, `__stack_top` is placed at the top of RAM.
+                self.ram_size = Some(top.saturating_sub(RAM_START_ADDRESS));
+            }
 
             if let Some(size) = max_input {
                 if size != 0 {
@@ -184,34 +196,53 @@ impl Program {
                 }
             }
             
-            // Re-calculate memory_size if needed, or just let MemoryLayout do it.
-            // In Jolt, memory_size usually refers to the heap size.
-            self.memory_size = self.heap_size;
+            // Note: `memory_size` is used by the emulator as the heap capacity above the
+            // (program + stack) region. If `ram_size` is available, callers should derive
+            // the effective heap size from it (see `discovered_memory_config`).
         }
     }
 
     pub fn build_with_channel(&mut self, target_dir: &str, _channel: &str) {
         if self.elf.is_none() {
-            // Use cargo-jolt to build the guest program
-            // CARGO_JOLT_PATH can be set to override (for development/testing)
-            let cargo_jolt_path = std::env::var("CARGO_JOLT_PATH")
-                .unwrap_or_else(|_| "cargo-jolt".to_string());
+            // Use cargo-jolt to build the guest program.
+            //
+            // IMPORTANT: don't assume the user's PATH `cargo-jolt` is the same version as this
+            // workspace (it might be an older installed binary with different CLI flags).
+            //
+            // - If `CARGO_JOLT_PATH` is set: run that binary directly (fast path).
+            // - Otherwise: run the workspace cargo-jolt via `cargo run -p cargo-jolt --release -- ...`
+            //   so the CLI flags always match this checkout.
+            // Optional fast-path: allow users to point to an external `cargo-jolt` binary.
+            //
+            // However, we must not assume it matches this workspace's CLI flags. In particular,
+            // older binaries may not understand `--mode`, and could accidentally forward it to
+            // `cargo build`, producing confusing errors like:
+            //   "error: unexpected argument '--mode' found"
+            //
+            // So we probe for `--mode` support and fall back to the workspace `cargo run -p cargo-jolt`
+            // if the external binary looks incompatible.
+            let cargo_jolt_path = std::env::var("CARGO_JOLT_PATH").ok().filter(|path| {
+                Self::cargo_jolt_supports_mode_flag(path).unwrap_or(false)
+            });
 
-            // Build base arguments for cargo-jolt
-            // cargo-jolt is invoked as: cargo-jolt jolt build -p <package> --release [--std] -- --target-dir <dir> --features guest
+            // Build base arguments for cargo-jolt.
+            //
+            // Important: cargo profile flags like `--release` must be passed to *cargo* (after `--`),
+            // not to cargo-jolt itself.
             let mut args = vec![
                 "jolt".to_string(),
                 "build".to_string(),
                 "-p".to_string(),
                 self.guest.clone(),
-                "--release".to_string(),
             ];
 
-            // Add --std flag if std mode is enabled
-            if self.std {
-                args.push("--mode".to_string());
-                args.push("std".to_string());
-            }
+            // Select build mode explicitly.
+            args.push("--mode".to_string());
+            args.push(if self.std {
+                "std".to_string()
+            } else {
+                "no-std".to_string()
+            });
 
             // Do NOT pass memory sizing flags here.
             // `cargo-jolt` owns the linker template, and sizing should come from the guest
@@ -229,6 +260,9 @@ impl Program {
             // Add separator for cargo passthrough args
             args.push("--".to_string());
 
+            // Always build release guests (Program expects `.../release/<guest>` output).
+            args.push("--release".to_string());
+
             // Pass --target-dir to cargo (not cargo-jolt)
             args.push("--target-dir".to_string());
             args.push(guest_target_dir.clone());
@@ -238,19 +272,49 @@ impl Program {
             args.push("--features".to_string());
             args.push("guest".to_string());
 
-            let cmd_line = compose_command_line(&cargo_jolt_path, &[], &args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let (cmd_prog, cmd_prefix_args): (String, Vec<String>) = if let Some(path) = cargo_jolt_path {
+                (path, vec![])
+            } else {
+                (
+                    "cargo".to_string(),
+                    vec![
+                        "run".to_string(),
+                        "-p".to_string(),
+                        "cargo-jolt".to_string(),
+                        "--release".to_string(),
+                        "--".to_string(),
+                    ],
+                )
+            };
+
+            let mut full_args: Vec<String> = Vec::new();
+            full_args.extend(cmd_prefix_args.clone());
+            full_args.extend(args.clone());
+
+            let cmd_line = compose_command_line(
+                &cmd_prog,
+                &[],
+                &full_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            );
             info!("\n{cmd_line}");
 
-            let mut cmd = Command::new(&cargo_jolt_path);
-            cmd.args(&args);
+            let mut cmd = Command::new(&cmd_prog);
+            if cmd_prog == "cargo" {
+                let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("jolt-core manifest dir should have a parent");
+                cmd.current_dir(workspace_root);
+            }
+            cmd.args(&full_args);
 
             // Pass JOLT_FUNC_NAME if a specific function is set (for guest packages with multiple provable functions)
             if let Some(func) = &self.func {
                 cmd.env("JOLT_FUNC_NAME", func);
             }
 
-            let output = cmd.output()
-                .expect("failed to run cargo-jolt - make sure it's installed (cargo install --path crates/bolt)");
+            let output = cmd.output().expect(
+                "failed to run cargo-jolt (set CARGO_JOLT_PATH or ensure workspace builds cargo-jolt)",
+            );
 
             if !output.status.success() {
                 io::stderr().write_all(&output.stderr).unwrap();
@@ -285,6 +349,19 @@ impl Program {
 
             info!("Built guest binary with cargo-jolt: {}", elf_path.display());
         }
+    }
+
+    fn cargo_jolt_supports_mode_flag(path: &str) -> Option<bool> {
+        let output = Command::new(path)
+            .args(["jolt", "build", "--help"])
+            .output()
+            .ok()?;
+
+        // Some clap versions print help to stdout, others to stderr depending on exit status.
+        let mut combined = String::new();
+        combined.push_str(&String::from_utf8_lossy(&output.stdout));
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        Some(combined.contains("--mode"))
     }
 
     pub fn get_elf_contents(&self) -> Option<Vec<u8>> {

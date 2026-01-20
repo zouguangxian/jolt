@@ -1,0 +1,4 @@
+[alias]
+# Ensure `cargo jolt ...` uses the workspace `cargo-jolt` (not any installed binary on PATH).
+jolt = "run -p cargo-jolt -- jolt"
+

@@ -80,6 +80,22 @@ impl RISCVTrace for CSRRW {
         // Get the value being written (from rs1)
         let write_val = cpu.x[self.operands.rs1 as usize] as u64;
 
+        if std::env::var("JOLT_DEBUG_CSRRW").is_ok() {
+            eprintln!(
+                "CSRRW @ {:#x}: csr=0x{:03x} rd=x{} rs1=x{} old={:#x} write={:#x}",
+                self.address, csr_addr, self.operands.rd, self.operands.rs1, old_csr_val, write_val
+            );
+        }
+
+        // Special case: if rd == rs1 (and rd != 0), executing CSRRW will overwrite rs1 with
+        // old_CSR. Our proof sequence still needs access to the *original* rs1 value.
+        //
+        // We stash it into a dedicated persistent virtual register before executing.
+        if self.operands.rd != 0 && self.operands.rd == self.operands.rs1 {
+            let saved = cpu.vr_allocator.csrrw_saved_rs1_register() as usize;
+            cpu.x[saved] = cpu.sign_extend(write_val as i64);
+        }
+
         // Execute the CSR operation (updates emulation state)
         let mut ram_access = ();
         self.execute(cpu, &mut ram_access);
@@ -88,26 +104,36 @@ impl RISCVTrace for CSRRW {
         let mut inline_sequence = self.inline_sequence(&cpu.vr_allocator, cpu.xlen);
 
         if self.operands.rd == 0 {
-            // csrw pseudo-instruction: just one advice (new CSR value)
-            if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[0] {
-                instr.advice = write_val;
-            } else {
-                panic!("Expected VirtualAdvice at index 0, got {:?}", inline_sequence[0]);
+            // csrw pseudo-instruction: one advice (new CSR value)
+            let mut filled = 0;
+            for instr in &mut inline_sequence {
+                if let Instruction::VirtualAdvice(v) = instr {
+                    v.advice = write_val;
+                    filled += 1;
+                    break;
+                }
+            }
+            if filled != 1 {
+                panic!("CSRRW (rd=0): expected 1 VirtualAdvice, saw {filled}");
             }
         } else {
-            // Full csrrw: need two advice values
-            // Index 0: old CSR value (for rd)
-            if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[0] {
-                instr.advice = old_csr_val;
-            } else {
-                panic!("Expected VirtualAdvice at index 0, got {:?}", inline_sequence[0]);
+            // Full csrrw: two advice values (old CSR, then new write value).
+            let mut filled = 0;
+            for instr in &mut inline_sequence {
+                if let Instruction::VirtualAdvice(v) = instr {
+                    v.advice = match filled {
+                        0 => old_csr_val,
+                        1 => write_val,
+                        _ => v.advice,
+                    };
+                    filled += 1;
+                    if filled == 2 {
+                        break;
+                    }
+                }
             }
-
-            // Index 2: new CSR value (from rs1)
-            if let Instruction::VirtualAdvice(instr) = &mut inline_sequence[2] {
-                instr.advice = write_val;
-            } else {
-                panic!("Expected VirtualAdvice at index 2, got {:?}", inline_sequence[2]);
+            if filled != 2 {
+                panic!("CSRRW (rd!=0): expected 2 VirtualAdvice, saw {filled}");
             }
         }
 
@@ -116,20 +142,24 @@ impl RISCVTrace for CSRRW {
         for instr in inline_sequence {
             instr.trace(cpu, trace.as_deref_mut());
         }
+
     }
 
     /// Generate inline sequence for CSRRW.
     ///
     /// For rd = 0 (csrw pseudo-instruction):
-    ///   0: VirtualAdvice(temp)     - Get write value as advice
-    ///   1: ADDI(vr, temp, 0)       - Write to virtual register
+    ///   0: VirtualAdvice(temp_new)      - Get write value as advice
+    ///   1: VirtualAssertEQ(temp_new, rs1) - Assert advice matches rs1
+    ///   2: ADDI(vr, temp_new, 0)        - Write to CSR virtual register
     ///
     /// For rd != 0 (full csrrw, atomic swap):
-    ///   0: VirtualAdvice(temp_old) - Get OLD CSR value as advice
-    ///   1: ADDI(rd, temp_old, 0)   - Write old value to rd
-    ///   2: VirtualAdvice(temp_new) - Get NEW value (from rs1) as advice
-    ///   3: ADDI(vr, temp_new, 0)   - Write new value to virtual register
-    ///   4: VirtualAssertEQ(temp_new, rs1) - Assert advice matches rs1
+    ///   0: ADDI(rs1_copy, rs1, 0)            - Copy rs1 (handles rd == rs1 case)
+    ///   1: VirtualAdvice(temp_old)           - Get OLD CSR value as advice
+    ///   2: VirtualAssertEQ(temp_old, vr)     - Assert old advice matches current CSR virtual register
+    ///   3: ADDI(rd, temp_old, 0)             - Write old value to rd (may clobber rs1)
+    ///   4: VirtualAdvice(temp_new)           - Get NEW value (rs1) as advice
+    ///   5: VirtualAssertEQ(temp_new, rs1_copy) - Assert new advice matches original rs1
+    ///   6: ADDI(vr, temp_new, 0)             - Write new value to CSR virtual register
     fn inline_sequence(
         &self,
         allocator: &VirtualRegisterAllocator,
@@ -155,33 +185,37 @@ impl RISCVTrace for CSRRW {
 
         if self.operands.rd == 0 {
             // csrw pseudo-instruction: just write new value
-            let value_reg = allocator.allocate();
+            let temp_new = allocator.allocate();
 
-            // Index 0: Get write value as advice
-            asm.emit_j::<VirtualAdvice>(*value_reg, 0);
-
-            // Index 1: Write value to virtual register
-            asm.emit_i::<ADDI>(virtual_reg, *value_reg, 0);
+            // Advice provides the rs1 write value.
+            asm.emit_j::<VirtualAdvice>(*temp_new, 0);
+            // Prove the advice matches rs1 (rd == 0 so rs1 is not clobbered by CSRRW).
+            asm.emit_b::<VirtualAssertEQ>(*temp_new, self.operands.rs1, 0);
+            // Update CSR virtual register.
+            asm.emit_i::<ADDI>(virtual_reg, *temp_new, 0);
         } else {
             // Full csrrw: rd ← old_CSR, CSR ← rs1
             let temp_old = allocator.allocate();
             let temp_new = allocator.allocate();
 
-            // Index 0: Get old CSR value as advice
-            asm.emit_j::<VirtualAdvice>(*temp_old, 0);
+            let rs1_proof_reg = if self.operands.rd != 0 && self.operands.rd == self.operands.rs1
+            {
+                allocator.csrrw_saved_rs1_register()
+            } else {
+                self.operands.rs1
+            };
 
-            // Index 1: Write old value to rd
+            // OLD CSR value comes from advice; prove it matches the current CSR virtual register.
+            asm.emit_j::<VirtualAdvice>(*temp_old, 0);
+            asm.emit_b::<VirtualAssertEQ>(*temp_old, virtual_reg, 0);
+
+            // Write old value to rd (may clobber rs1 if rd == rs1).
             asm.emit_i::<ADDI>(self.operands.rd, *temp_old, 0);
 
-            // Index 2: Get new value (rs1) as advice
+            // NEW CSR value comes from advice; prove it matches original rs1, then update CSR VR.
             asm.emit_j::<VirtualAdvice>(*temp_new, 0);
-
-            // Index 3: Write new value to virtual register
+            asm.emit_b::<VirtualAssertEQ>(*temp_new, rs1_proof_reg, 0);
             asm.emit_i::<ADDI>(virtual_reg, *temp_new, 0);
-
-            // Index 4: Assert that advice equals rs1 (verifies prover honesty)
-            // This prevents the prover from lying about what value is being written.
-            asm.emit_b::<VirtualAssertEQ>(*temp_new, self.operands.rs1, 0);
         }
 
         asm.finalize()

@@ -32,10 +32,23 @@ declare_riscv_instr!(
 
 impl SB {
     fn exec(&self, cpu: &mut Cpu, ram_access: &mut <SB as RISCVInstruction>::RAMAccess) {
+        let ea = cpu.x[self.operands.rs1 as usize].wrapping_add(self.operands.imm) as u64;
+        if ea == 0 {
+            eprintln!(
+                "SB illegal ea=0 @ {:#x}: rs1=x{}={:#x} imm={:#x} rs2=x{}={:#x} tp(x4)={:#x}",
+                self.address,
+                self.operands.rs1,
+                cpu.x[self.operands.rs1 as usize],
+                self.operands.imm,
+                self.operands.rs2,
+                cpu.x[self.operands.rs2 as usize],
+                cpu.x[4],
+            );
+        }
         *ram_access = cpu
             .mmu
             .store(
-                cpu.x[self.operands.rs1 as usize].wrapping_add(self.operands.imm) as u64,
+                ea,
                 cpu.x[self.operands.rs2 as usize] as u8,
             )
             .ok()

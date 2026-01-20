@@ -18,6 +18,7 @@ pub extern "C" fn platform_exit(code: i32) -> ! {
                 );
             }
         } else {
+            let _ = code;
             unsafe { core::arch::asm!("j .", options(noreturn)); }
         }
     }

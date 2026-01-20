@@ -40,3 +40,9 @@ arch-tests-64imac: build-emulator
 
 arch-tests-64gc: build-emulator
 	$(call RISCOF_RUN,jolt-64gc)
+
+build-fib:
+	RUST_LOG=debug cargo run -p cargo-jolt -- jolt build -p fibonacci-guest --mode no-std -- --features guest-nostd
+
+build-stdlib:
+	RUST_LOG=debug JOLT_FUNC_NAME=parallel_sum_of_squares cargo run -p cargo-jolt -- jolt build -p stdlib-guest --mode std -- --features guest
